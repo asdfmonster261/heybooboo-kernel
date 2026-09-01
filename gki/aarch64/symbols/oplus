@@ -137,6 +137,7 @@
   memory_cgrp_subsys
   memory_cgrp_subsys_enabled_key
   cgroup_add_dfl_cftypes
+  cgroup_get_from_path
   mipi_dsi_generic_write
   mmc_wait_for_cmd
   mnt_drop_write
@@ -296,6 +297,7 @@
   __traceiter_android_vh_cpufreq_fast_switch
   __traceiter_android_vh_exit_check
   __traceiter_android_vh_move_entity
+  __traceiter_android_vh_sca_migrate_same
   __traceiter_android_vh_scx_restore_flags
   __traceiter_android_vh_task_should_scx
   __traceiter_android_vh_enq_to_priq
@@ -306,6 +308,7 @@
   __traceiter_android_vh_scx_enabled
   __traceiter_android_vh_scx_set_cpus_allowed
   __traceiter_android_vh_scx_task_can_run_on
+  __traceiter_android_rvh_check_class_changing
   __traceiter_android_vh_scx_exit_on_abnormal
   __traceiter_android_vh_scx_task_switch_finish
   __traceiter_android_vh_cgroup_set_task
@@ -450,6 +453,7 @@
   __tracepoint_android_vh_cpufreq_fast_switch
   __tracepoint_android_vh_exit_check
   __tracepoint_android_vh_move_entity
+  __tracepoint_android_vh_sca_migrate_same
   __tracepoint_android_vh_scx_restore_flags
   __tracepoint_android_vh_task_should_scx
   __tracepoint_android_vh_enq_to_priq
@@ -460,6 +464,7 @@
   __tracepoint_android_vh_scx_enabled
   __tracepoint_android_vh_scx_set_cpus_allowed
   __tracepoint_android_vh_scx_task_can_run_on
+  __tracepoint_android_rvh_check_class_changing
   __tracepoint_android_vh_scx_exit_on_abnormal
   __tracepoint_android_vh_scx_task_switch_finish
   __tracepoint_android_vh_cgroup_set_task
@@ -644,10 +649,10 @@
   __traceiter_android_vh_filemap_fault_pre_folio_locked
   __traceiter_android_vh_filemap_folio_mapped
   __traceiter_android_vh_folio_remove_rmap_ptes
+  __traceiter_android_vh_skip_cma
   __traceiter_android_vh_lock_delay_schedule
   __traceiter_android_vh_lock_task_fork
   __traceiter_android_vh_lock_task_exit
-  __traceiter_android_vh_skip_cma
   __tracepoint_android_vh_lru_gen_add_folio_skip
   __tracepoint_android_vh_lru_gen_del_folio_skip
   __tracepoint_android_vh_evict_folios_bypass
@@ -664,8 +669,8 @@
   __tracepoint_android_vh_resched_curr_lazy
   __tracepoint_android_vh_restore_curr_resched
   __tracepoint_android_vh_clear_curr_lazy
+  __tracepoint_android_vh_skip_cma
   __tracepoint_android_vh_lock_delay_schedule
   __tracepoint_android_vh_lock_task_fork
   __tracepoint_android_vh_lock_task_exit
   isolate_folio
-  __tracepoint_android_vh_skip_cma

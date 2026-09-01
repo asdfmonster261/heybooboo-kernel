@@ -135,6 +135,9 @@
 
 #include "internal.h"
 
+EXPORT_TRACEPOINT_SYMBOL_GPL(page_cache_sync_ra);
+EXPORT_TRACEPOINT_SYMBOL_GPL(page_cache_async_ra);
+
 /*
  * Initialise a struct file's readahead state.  Assumes that the caller has
  * memset *ra to zero.
@@ -161,8 +164,13 @@ static void read_pages(struct readahead_control *rac)
 	const struct address_space_operations *aops = rac->mapping->a_ops;
 	struct folio *folio;
 	struct blk_plug plug;
+	bool bypassed = false;
 
 	if (!readahead_count(rac))
+		return;
+
+	trace_android_vh_readahead_bypass(rac, &bypassed);
+	if (bypassed)
 		return;
 
 	if (unlikely(rac->_workingset))
@@ -299,6 +307,8 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 
 		trace_android_vh_readahead_add_folio(folio, mapping);
 
+		trace_android_vh_page_cache_ra_mark(folio, mark, i);
+
 		ret = filemap_add_folio(mapping, folio, index + i, gfp_mask);
 		if (ret < 0) {
 			folio_put(folio);
@@ -369,8 +379,13 @@ void force_page_cache_ra(struct readahead_control *ractl,
 	struct file_ra_state *ra = ractl->ra;
 	struct backing_dev_info *bdi = inode_to_bdi(mapping->host);
 	unsigned long max_pages;
+	bool ra_done = false;
 
 	if (unlikely(!mapping->a_ops->read_folio && !mapping->a_ops->readahead))
+		return;
+
+	trace_android_rvh_customize_force_ra(ractl, nr_to_read, &ra_done);
+	if (ra_done)
 		return;
 
 	/*
@@ -671,6 +686,7 @@ void page_cache_sync_ra(struct readahead_control *ractl,
 readit:
 	ra_mmap_miss->order = 0;
 	ractl->_index = ra->start;
+	trace_android_vh_customize_ractl(ractl, ra, NULL, false);
 	page_cache_ra_order(ractl, ra);
 }
 EXPORT_SYMBOL_GPL(page_cache_sync_ra);
@@ -743,35 +759,29 @@ readit:
 		ra->size -= end - aligned_end;
 	ra->async_size = ra->size;
 	ractl->_index = ra->start;
+	trace_android_vh_customize_ractl(ractl, ra, NULL, true);
 	page_cache_ra_order(ractl, ra);
 }
 EXPORT_SYMBOL_GPL(page_cache_async_ra);
 
 ssize_t ksys_readahead(int fd, loff_t offset, size_t count)
 {
-	ssize_t ret;
-	struct fd f;
+	CLASS(fd, f)(fd);
 
-	ret = -EBADF;
-	f = fdget(fd);
-	if (!fd_file(f) || !(fd_file(f)->f_mode & FMODE_READ))
-		goto out;
+	if (fd_empty(f) || !(fd_file(f)->f_mode & FMODE_READ))
+		return -EBADF;
 
 	/*
 	 * The readahead() syscall is intended to run only on files
 	 * that can execute readahead. If readahead is not possible
 	 * on this file, then we must return -EINVAL.
 	 */
-	ret = -EINVAL;
 	if (!fd_file(f)->f_mapping || !fd_file(f)->f_mapping->a_ops ||
 	    (!S_ISREG(file_inode(fd_file(f))->i_mode) &&
 	    !S_ISBLK(file_inode(fd_file(f))->i_mode)))
-		goto out;
+		return -EINVAL;
 
-	ret = vfs_fadvise(fd_file(f), offset, count, POSIX_FADV_WILLNEED);
-out:
-	fdput(f);
-	return ret;
+	return vfs_fadvise(fd_file(f), offset, count, POSIX_FADV_WILLNEED);
 }
 
 SYSCALL_DEFINE3(readahead, int, fd, loff_t, offset, size_t, count)

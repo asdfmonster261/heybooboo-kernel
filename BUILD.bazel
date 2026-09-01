@@ -393,6 +393,9 @@ common_kernel(
     outs = X86_64_OUTS,
     arch = "x86_64",
     build_gki_artifacts = True,
+    # We use aarch64 here because it's readily available and improves performance.
+    # See b/500458317 for more on x86_64 collection efforts.
+    clang_autofdo_profile = ":gki/aarch64/afdo/kernel.afdo",
     ddk_module_headers = [":all_headers_x86_64"],
     defconfig = "arch/x86/configs/gki_defconfig",
     extra_dist = [
@@ -526,14 +529,25 @@ kernel_build(
     defconfig = "arch/arm64/configs/microdroid_defconfig",
     make_goals = [
         "Image",
+        "modules",
     ],
     makefile = ":Makefile",
+    module_outs = [
+        "drivers/dma-buf/heaps/system_heap.ko",
+        "drivers/iommu/pkvm-pviommu.ko",
+    ],
+)
+
+kernel_modules_install(
+    name = "kernel_aarch64_microdroid_modules_install",
+    kernel_build = ":kernel_aarch64_microdroid",
 )
 
 pkg_files(
     name = "kernel_aarch64_microdroid_dist_files",
     srcs = [
         ":kernel_aarch64_microdroid",
+        ":kernel_aarch64_microdroid_modules_install",
     ],
     strip_prefix = strip_prefix.files_only(),
     visibility = ["//visibility:private"],
@@ -897,7 +911,6 @@ _DB845C_MODULE_OUTS = [
     "drivers/usb/host/ohci-hcd.ko",
     "drivers/usb/host/ohci-pci.ko",
     "drivers/usb/host/ohci-platform.ko",
-    "drivers/usb/host/xhci-pci-renesas.ko",
     "drivers/usb/typec/mux/fsa4480.ko",
     "drivers/usb/typec/mux/nb7vpq904m.ko",
     "drivers/usb/typec/mux/wcd939x-usbss.ko",
@@ -1774,7 +1787,6 @@ ddk_headers(
         "drivers/thermal/thermal_netlink.h",
         "drivers/thermal/thermal_thresholds.h",
         "drivers/ufs/core/ufshcd-crypto.h",
-        "drivers/ufs/core/ufshcd-priv.h",
         "drivers/ufs/host/ufshcd-pltfrm.h",
         "drivers/usb/dwc3/core.h",
         "sound/usb/card.h",
@@ -1782,6 +1794,7 @@ ddk_headers(
         ":all_headers_allowlist_aarch64_globs",
         ":all_headers_allowlist_common_globs",
         ":all_headers_allowlist_exynos",
+        ":all_headers_allowlist_vivo",
         ":pkvm_headers_aarch64",
         ":xhci_headers",
     ],
@@ -1889,7 +1902,6 @@ ddk_headers(
         "arch/arm64/kvm/hyp/include/nvhe/spinlock.h",
         "drivers/devfreq/governor.h",
         "drivers/pinctrl/core.h",
-        "drivers/ufs/core/ufshcd-priv.h",
         "drivers/ufs/host/ufshcd-pltfrm.h",
         "drivers/usb/dwc3/core.h",
         "drivers/usb/dwc3/debug.h",
@@ -1943,6 +1955,19 @@ ddk_headers(
         "kernel/sched/sched.h",
         "kernel/sched/stats.h",
         "kernel/workqueue_internal.h",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+ddk_headers(
+    name = "all_headers_allowlist_vivo",
+    hdrs = [
+        "fs/f2fs/f2fs.h",
+        "fs/f2fs/iostat.h",
+        "fs/f2fs/node.h",
+        "fs/f2fs/segment.h",
+        "mm/internal.h",
+        "mm/swap.h",
     ],
     visibility = ["//visibility:private"],
 )
@@ -2964,6 +2989,26 @@ cc_binary_with_abi(
     ],
 )
 
+cc_binary_with_abi(
+    name = "kselftest_wrapfd_test",
+    srcs = [
+        "include/uapi/linux/wrapfd.h",
+        "tools/include/linux/align.h",
+        "tools/include/uapi/linux/const.h",
+        "tools/testing/selftests/drivers/wrapfd/wrapfd.c",
+    ],
+    copts = _KSELFTEST_COPTS,
+    includes = [
+        "include/uapi",
+        "tools/include",
+        "tools/testing/selftests",
+    ],
+    linkopts = ["-static"],
+    path_prefix = _KSELFTEST_DIR,
+    visibility = ["//visibility:private"],
+    deps = [":kselftest_headers_lib"],
+)
+
 pkg_files(
     name = "kselftest_config_x86_64",
     srcs = ["tools/testing/selftests/android/config_x86_64.xml"],
@@ -3038,6 +3083,7 @@ pkg_filegroup(
         ":kselftest_vdso_vdso_test_clock_getres_x86_64",
         ":kselftest_vdso_vdso_test_getcpu_x86_64",
         ":kselftest_vdso_vdso_test_gettimeofday_x86_64",
+        ":kselftest_wrapfd_test_x86_64",
         ":kselftest_x86_check_initial_reg_state_x86_64",
         ":kselftest_x86_ldt_gdt_x86_64",
         ":kselftest_x86_ptrace_syscall_x86_64",
@@ -3239,6 +3285,7 @@ pkg_filegroup(
         ":kselftest_vdso_vdso_test_clock_getres_arm64",
         ":kselftest_vdso_vdso_test_getcpu_arm64",
         ":kselftest_vdso_vdso_test_gettimeofday_arm64",
+        ":kselftest_wrapfd_test_arm64",
     ],
     visibility = ["//visibility:private"],
 )

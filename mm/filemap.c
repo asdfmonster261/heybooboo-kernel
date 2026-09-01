@@ -60,6 +60,17 @@
 #include <trace/hooks/mm.h>
 
 /*
+ * trace_android_vh_unlock_mmap_bypass is called in mm/internal.h
+ * by including trace/hooks/mm.h directly, which will result in build-err.
+ * So we create func: _trace_android_vh_unlock_mmap_bypass.
+ */
+void _trace_android_vh_unlock_mmap_bypass(struct vm_fault *vmf,
+		struct file *fpin, bool *bypass)
+{
+	trace_android_vh_unlock_mmap_bypass(vmf, fpin, bypass);
+}
+
+/*
  * FIXME: remove all knowledge of the buffer layer from the core VM
  */
 #include <linux/buffer_head.h> /* for try_to_free_buffers */
@@ -1057,6 +1068,18 @@ struct folio *filemap_alloc_folio_noprof(gfp_t gfp, unsigned int order)
 	return folio_alloc_noprof(gfp, order);
 }
 EXPORT_SYMBOL(filemap_alloc_folio_noprof);
+#else
+/*
+ * trace_android_vh_filemap_alloc_folio is called in include/linux/pagemap.h
+ * by including include/trace/hooks/mm.h, which will result to build-err.
+ * So we create func: _trace_android_vh_filemap_alloc_folio.
+ */
+void _trace_android_vh_filemap_alloc_folio(gfp_t gfp, unsigned int order,
+					   bool *alloc_fail)
+{
+	trace_android_vh_filemap_alloc_folio(gfp, order, alloc_fail);
+}
+EXPORT_SYMBOL_GPL(_trace_android_vh_filemap_alloc_folio);
 #endif
 
 /*
@@ -1717,6 +1740,8 @@ void folio_end_writeback(struct folio *folio)
 	folio_get(folio);
 	if (__folio_end_writeback(folio))
 		folio_wake_bit(folio, PG_writeback);
+	else
+		trace_android_vh_folio_end_writeback(folio);
 
 	filemap_end_dropbehind_write(folio);
 	acct_reclaim_writeback(folio);
@@ -2469,7 +2494,13 @@ static int filemap_read_folio(struct file *file, filler_t filler,
 {
 	bool workingset = folio_test_workingset(folio);
 	unsigned long pflags;
+	bool bypassed = false;
 	int error;
+
+	trace_android_vh_filemap_read_folio_bypass(file, folio->mapping,
+						   folio, &bypassed);
+	if (bypassed)
+		return 0;
 
 	/* Start the actual read. The read will unlock the page. */
 	if (unlikely(workingset))
@@ -3388,8 +3419,10 @@ static struct file *do_sync_mmap_readahead(struct vm_fault *vmf)
 	trace_android_vh_tune_mmap_readaround(ra->ra_pages, vmf->pgoff,
 			&ra->start, &ra->size, &ra->async_size);
 	ractl._index = ra->start;
+	trace_android_vh_page_cache_read(file->f_inode, ra->start, ra->size);
 	trace_android_vh_page_cache_readahead_start(file, vmf->pgoff,
 			ra->size, true);
+	trace_android_vh_customize_ractl(&ractl, ra, vmf->vma, false);
 	page_cache_ra_order(&ractl, ra);
 	trace_android_vh_page_cache_readahead_end(file, vmf->pgoff);
 	return fpin;
@@ -3846,6 +3879,7 @@ static vm_fault_t filemap_map_order0_folio(struct vm_fault *vmf,
 	set_pte_range(vmf, folio, page, 1, addr);
 	(*rss)++;
 	folio_ref_inc(folio);
+	trace_android_vh_map_order0_folio(vmf->vma->vm_file, vmf->pgoff, folio, ret);
 
 	return ret;
 }
@@ -3869,15 +3903,20 @@ vm_fault_t filemap_map_pages(struct vm_fault *vmf,
 	pgoff_t orig_start_pgoff = start_pgoff;
 	bool can_map_large;
 
+	/*
+	 * Recalculate end_pgoff based on file_end before calling
+	 * next_uptodate_folio() to avoid races with concurrent
+	 * truncation.
+	 */
+	file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;
+	end_pgoff = min(end_pgoff, file_end);
+
 	rcu_read_lock();
 	folio = next_uptodate_folio(&xas, mapping, end_pgoff);
 	if (!folio)
 		goto out;
 	first_pgoff = xas.xa_index;
 	orig_start_pgoff = xas.xa_index;
-
-	file_end = DIV_ROUND_UP(i_size_read(mapping->host), PAGE_SIZE) - 1;
-	end_pgoff = min(end_pgoff, file_end);
 
 	/*
 	 * Do not allow to map with PTEs beyond i_size and with PMD
@@ -4022,6 +4061,7 @@ static struct folio *do_read_cache_folio(struct address_space *mapping,
 	struct folio *folio;
 	int err;
 
+	trace_android_vh_page_cache_read(mapping->host, index, 1);
 	if (!filler)
 		filler = mapping->a_ops->read_folio;
 repeat:

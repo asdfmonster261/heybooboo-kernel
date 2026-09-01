@@ -610,16 +610,16 @@ static void dm_bow_dtr(struct dm_target *ti)
 	struct bow_context *bc = (struct bow_context *) ti->private;
 	struct kobject *kobj;
 
-	if (bc->workqueue)
-		destroy_workqueue(bc->workqueue);
-	if (bc->bufio)
-		dm_bufio_client_destroy(bc->bufio);
-
 	kobj = &bc->kobj_holder.kobj;
 	if (kobj->state_initialized) {
 		kobject_put(kobj);
 		wait_for_completion(dm_get_completion_from_kobject(kobj));
 	}
+
+	if (bc->workqueue)
+		destroy_workqueue(bc->workqueue);
+	if (bc->bufio)
+		dm_bufio_client_destroy(bc->bufio);
 
 	mutex_lock(&bc->ranges_lock);
 	while (rb_first(&bc->ranges)) {
@@ -1163,7 +1163,16 @@ static int dm_bow_map(struct dm_target *ti, struct bio *bio)
 		} else if (state == CHECKPOINT) {
 			if (bio->bi_iter.bi_sector == 0)
 				ret = handle_sector0(bc, bio);
-			else if (bio_data_dir(bio) == WRITE)
+			else if (bio_op(bio) == REQ_OP_DISCARD) {
+				/*
+				 * Ignore discard requests in CHECKPOINT state.
+				 * Passing them through would physically erase data that we
+				 * are trying to protect, creating a state mismatch.
+				 * We complete the bio with success and stop processing.
+				 */
+				bio_endio(bio);
+				ret = DM_MAPIO_SUBMITTED;
+			} else if (bio_data_dir(bio) == WRITE)
 				ret = queue_write(bc, bio);
 			/* else pass-through */
 		}

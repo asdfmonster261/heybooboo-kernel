@@ -4,6 +4,7 @@
  * Author: Christoffer Dall <c.dall@virtualopensystems.com>
  */
 
+#include <linux/arm-smccc.h>
 #include <linux/bug.h>
 #include <linux/cpu_pm.h>
 #include <linux/entry-kvm.h>
@@ -490,8 +491,10 @@ int kvm_arch_vcpu_create(struct kvm_vcpu *vcpu)
 	kvm_destroy_mpidr_data(vcpu->kvm);
 
 	err = kvm_vgic_vcpu_init(vcpu);
-	if (err)
+	if (err) {
+		kvm_vgic_vcpu_destroy(vcpu);
 		return err;
+	}
 
 	err = kvm_share_hyp(vcpu, vcpu + 1);
 	if (err)
@@ -758,6 +761,11 @@ int kvm_arch_vcpu_ioctl_set_mpstate(struct kvm_vcpu *vcpu,
 int kvm_arch_vcpu_runnable(struct kvm_vcpu *v)
 {
 	bool irq_lines = *vcpu_hcr(v) & (HCR_VI | HCR_VF);
+
+	irq_lines |= (!irqchip_in_kernel(v->kvm) &&
+		      (kvm_timer_should_notify_user(v) ||
+		       kvm_pmu_should_notify_user(v)));
+
 	return ((irq_lines || kvm_vgic_vcpu_pending_irq(v))
 		&& !kvm_arm_vcpu_stopped(v) && !v->arch.pause);
 }
@@ -1697,6 +1705,37 @@ static int kvm_arm_vcpu_set_events(struct kvm_vcpu *vcpu,
 	return __kvm_arm_vcpu_set_events(vcpu, events);
 }
 
+static int kvm_pvm_one_reg_allowed(struct kvm_vcpu *vcpu, struct kvm_one_reg *reg)
+{
+	u64 off;
+
+	if (!vcpu_get_flag(vcpu, VCPU_PKVM_FINALIZED))
+		return 0;
+
+	if ((reg->id & KVM_REG_ARM_COPROC_MASK) != KVM_REG_ARM_CORE)
+		return -EPERM;
+
+	/* Only regs[0] to regs[3] matter to HVCs */
+	off = reg->id & ~(KVM_REG_ARCH_MASK | KVM_REG_SIZE_MASK | KVM_REG_ARM_CORE);
+	if (off > KVM_REG_ARM_CORE_REG(regs.regs[3]))
+		return -EPERM;
+
+	/* For protected VMs, SET_ONE_REG|GET_ONE_REG only make sense for forwarded guest HVCs */
+	if (vcpu->run->exit_reason != KVM_EXIT_HYPERCALL)
+		return -EBUSY;
+
+	switch (vcpu->run->hypercall.nr) {
+	/*
+	 * It is expected from the VMM to perform the power cycle, most likely with
+	 * VFIO_DEVICE_FEATURE_LOW_POWER_ENTRY/EXIT
+	 */
+	case ARM_SMCCC_VENDOR_HYP_KVM_DEV_REQ_PWR_FUNC_ID:
+		return 0;
+	}
+
+	return -EBUSY;
+}
+
 long kvm_arch_vcpu_ioctl(struct file *filp,
 			 unsigned int ioctl, unsigned long arg)
 {
@@ -1724,13 +1763,15 @@ long kvm_arch_vcpu_ioctl(struct file *filp,
 		if (unlikely(!kvm_vcpu_initialized(vcpu)))
 			break;
 
-		r = -EPERM;
-		if (unlikely(vcpu_is_protected(vcpu) && vcpu_get_flag(vcpu, VCPU_PKVM_FINALIZED)))
-			break;
-
 		r = -EFAULT;
 		if (copy_from_user(&reg, argp, sizeof(reg)))
 			break;
+
+		if (vcpu_is_protected(vcpu)) {
+			r = kvm_pvm_one_reg_allowed(vcpu, &reg);
+			if (r)
+				break;
+		}
 
 		/*
 		 * We could owe a reset due to PSCI. Handle the pending reset
@@ -2549,6 +2590,22 @@ static int init_pkvm_host_sve_state(void)
 	return 0;
 }
 
+static int pkvm_check_sme_dvmsync_fw_call(void)
+{
+	struct arm_smccc_res res;
+
+	if (!cpus_have_final_cap(ARM64_WORKAROUND_4193714))
+		return 0;
+
+	arm_smccc_1_1_smc(ARM_SMCCC_CPU_WORKAROUND_4193714, &res);
+	if (res.a0) {
+		kvm_err("pKVM requires firmware support for C1-Pro erratum 4193714\n");
+		return -ENODEV;
+	}
+
+	return 0;
+}
+
 /*
  * Finalizes the initialization of hyp mode, once everything else is initialized
  * and the initialziation process cannot fail.
@@ -2745,6 +2802,10 @@ static int __init init_hyp_mode(void)
 		}
 
 		err = init_pkvm_host_sve_state();
+		if (err)
+			goto out_err;
+
+		err = pkvm_check_sme_dvmsync_fw_call();
 		if (err)
 			goto out_err;
 
@@ -3000,6 +3061,26 @@ static int __init early_kvm_wfe_trap_policy_cfg(char *arg)
 	return early_kvm_wfx_trap_policy_cfg(arg, &kvm_wfe_trap_policy);
 }
 early_param("kvm-arm.wfe_trap_policy", early_kvm_wfe_trap_policy_cfg);
+
+static int early_psci_mem_protect_cfg(char *arg)
+{
+	if (!arg)
+		return -EINVAL;
+
+	if (strcmp(arg, "force") == 0) {
+		kvm_psci_mem_protect_mode = KVM_PSCI_MEM_PROTECT_FORCE;
+		return 0;
+	}
+
+	if (strcmp(arg, "off") == 0) {
+		kvm_psci_mem_protect_mode = KVM_PSCI_MEM_PROTECT_OFF;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+early_param("kvm-arm.psci_mem_protect", early_psci_mem_protect_cfg);
 
 enum kvm_mode kvm_get_mode(void)
 {

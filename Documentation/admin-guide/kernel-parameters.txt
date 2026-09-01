@@ -2763,6 +2763,32 @@
 			(enabled). Disable by KVM if hardware lacks support
 			for NPT.
 
+	kvm-arm.ffa-unmap-on-lend=
+			[KVM,ARM,EARLY] Controls whether host stage-2 memory is
+			unmapped when lent through FF-A in order to mitigate
+			speculative reads from the non-secure world. Note that
+			modifying the host stage-2 page tables is likely to
+			impact performance.
+			Format: [ <bool> | full ]
+			Default: false
+
+			off: (default) Do not unmap host stage-2 memory on FF-A
+			     lend.
+
+			on:  Unmap host stage-2 memory on FF-A lend to protect
+			     against read speculation from the non-secure world
+			     to regions of memory protected by TrustZone. Skips
+			     IOMMU updates and TLB invalidation completion
+			     steps, relying on TrustZone to protect memory.
+
+			full: Unmap host stage-2 memory on FF-A lend and
+			      perform full IOMMU updates and completion steps
+			      when donating and reclaiming memory. This is
+			      slower than "on".
+
+			Specifying "kvm-arm.ffa-unmap-on-lend" without a value
+			enables the parameter in standard "on" mode.
+
 	kvm-arm.hyp_lm_size_mb=
 			[KVM,ARM,EARLY] Maximum amount of contiguous memory mappable in
 			the pKVM hypervisor linear map, in MB. Any attempt to map more
@@ -2801,6 +2827,14 @@
 	kvm-arm.protected_prefault=
 			[KVM,ARM] Minimum order for each protected VM fault.
 			This range from 0 (default) to 9.
+
+	kvm-arm.psci_mem_protect=
+			[KVM,ARM,EARLY] Control usage of PSCI MEM_PROTECT.
+
+			force: Enforce PSCI MEM_PROTECT handling regardless of
+			advertised PSCI version.
+
+			off: Skip PSCI MEM_PROTECT handling.
 
 	kvm-arm.vgic_v3_group0_trap=
 			[KVM,ARM,EARLY] Trap guest accesses to GICv3 group-0
@@ -4817,6 +4851,12 @@
 
 	pm_debug_messages	[SUSPEND,KNL]
 			Enable suspend/resume debug messages during boot up.
+
+	pm.dpm_watchdog_enabled=
+			[PM] Enable or disable the DPM watchdog.  Requires
+			CONFIG_PM_SLEEP and CONFIG_DPM_WATCHDOG enabled.
+			Format: <bool>
+			Default value is set by CONFIG_DPM_WATCHDOG_ENABLED.
 
 	pnp.debug=1	[PNP]
 			Enable PNP debug messages (depends on the
@@ -7334,6 +7374,9 @@
 				p = USB_QUIRK_SHORT_SET_ADDRESS_REQ_TIMEOUT
 					(Reduce timeout of the SET_ADDRESS
 					request from 5000 ms to 500 ms);
+				q = USB_QUIRK_FORCE_ONE_CONFIG (Device
+					claims zero configurations,
+					forcing to 1);
 			Example: quirks=0781:5580:bk,0a5c:5834:gij
 
 	usbhid.mousepoll=

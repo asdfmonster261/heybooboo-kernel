@@ -21,6 +21,7 @@
 #include <nvhe/alloc_mgt.h>
 #include <nvhe/ffa.h>
 #include <nvhe/iommu.h>
+#include <nvhe/its_emulate.h>
 #include <nvhe/mem_protect.h>
 #include <nvhe/modules.h>
 #include <nvhe/mm.h>
@@ -172,14 +173,37 @@ static void handle_pvm_entry_psci(struct pkvm_hyp_vcpu *hyp_vcpu)
 			unsigned long cpu_id = smccc_get_arg1(&hyp_vcpu->vcpu);
 			struct pkvm_hyp_vcpu *target_vcpu;
 			struct pkvm_hyp_vm *hyp_vm;
+			int prev;
 
 			hyp_vm = pkvm_hyp_vcpu_to_hyp_vm(hyp_vcpu);
 			target_vcpu = pkvm_mpidr_to_hyp_vcpu(hyp_vm, cpu_id);
 
-			if (target_vcpu && READ_ONCE(target_vcpu->power_state) == PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
-				WRITE_ONCE(target_vcpu->power_state, PSCI_0_2_AFFINITY_LEVEL_OFF);
+			/*
+			 * pvm_psci_vcpu_on() resolved this MPIDR before
+			 * forwarding and vcpus[] entries are never removed,
+			 * so a NULL here is an EL2-internal invariant
+			 * violation, not host-reachable.
+			 */
+			WARN_ON(!target_vcpu);
 
-			ret = PSCI_RET_INTERNAL_FAILURE;
+			prev = cmpxchg_relaxed(&target_vcpu->power_state,
+					       PSCI_0_2_AFFINITY_LEVEL_ON_PENDING,
+					       PSCI_0_2_AFFINITY_LEVEL_OFF);
+			/*
+			 * Rollback win (prior == ON_PENDING): target never ran.
+			 * Clear reset_state->reset so a future smp_load_acquire
+			 * doesn't pair with this cancelled cycle's release, and
+			 * report INTERNAL_FAILURE. Otherwise the target's reset
+			 * advanced past ON_PENDING (possibly on to OFF via its
+			 * own CPU_OFF), so per PSCI the guest sees SUCCESS.
+			 */
+			if (prev == PSCI_0_2_AFFINITY_LEVEL_ON_PENDING) {
+				WRITE_ONCE(target_vcpu->vcpu.arch.reset_state.reset,
+					   false);
+				ret = PSCI_RET_INTERNAL_FAILURE;
+			} else {
+				ret = PSCI_RET_SUCCESS;
+			}
 		}
 
 		break;
@@ -201,6 +225,9 @@ static void handle_pvm_entry_hvc64(struct pkvm_hyp_vcpu *hyp_vcpu)
 		fallthrough;
 	case ARM_SMCCC_VENDOR_HYP_KVM_MEM_RELINQUISH_FUNC_ID:
 		vcpu_set_reg(&hyp_vcpu->vcpu, 0, SMCCC_RET_SUCCESS);
+		break;
+	case ARM_SMCCC_VENDOR_HYP_KVM_DEV_REQ_PWR_FUNC_ID:
+		pkvm_device_request_power_pvm_entry(hyp_vcpu);
 		break;
 	default:
 		handle_pvm_entry_psci(hyp_vcpu);
@@ -371,6 +398,7 @@ static void handle_pvm_exit_hvc64(struct pkvm_hyp_vcpu *hyp_vcpu)
 
 	case PSCI_1_1_FN_SYSTEM_RESET2:
 	case PSCI_1_1_FN64_SYSTEM_RESET2:
+	case ARM_SMCCC_VENDOR_HYP_KVM_DEV_REQ_PWR_FUNC_ID:
 		n = 3;
 		break;
 
@@ -1028,11 +1056,16 @@ static void handle___kvm_vcpu_run(struct kvm_cpu_context *host_ctxt)
 		if (unlikely(system_supports_sme() && read_sysreg_s(SYS_SVCR)))
 			goto out;
 
-		if (hyp_vcpu->power_state == PSCI_0_2_AFFINITY_LEVEL_ON_PENDING)
-			pkvm_reset_vcpu(hyp_vcpu);
-
-		if (unlikely(hyp_vcpu->power_state != PSCI_0_2_AFFINITY_LEVEL_ON))
+		switch (READ_ONCE(hyp_vcpu->power_state)) {
+		case PSCI_0_2_AFFINITY_LEVEL_ON:
+			break;
+		case PSCI_0_2_AFFINITY_LEVEL_ON_PENDING:
+			if (pkvm_reset_vcpu(hyp_vcpu))
+				goto out;
+			break;
+		default:
 			goto out;
+		}
 
 		flush_hyp_vcpu(hyp_vcpu);
 		ret = __kvm_vcpu_run(&hyp_vcpu->vcpu);
@@ -1304,6 +1337,32 @@ static void handle___kvm_tlb_flush_vmid(struct kvm_cpu_context *host_ctxt)
 	DECLARE_REG(struct kvm_s2_mmu *, mmu, host_ctxt, 1);
 
 	__kvm_tlb_flush_vmid(kern_hyp_va(mmu));
+}
+
+static void handle___pkvm_init_its_emulation(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(phys_addr_t, dev_addr, host_ctxt, 1);
+	DECLARE_REG(void *, priv_its_state, host_ctxt, 2);
+	DECLARE_REG(size_t, priv_num_pages, host_ctxt, 3);
+	DECLARE_REG(struct its_shadow_tables *, shadow, host_ctxt, 4);
+
+	if (!is_protected_kvm_enabled())
+		return;
+
+	cpu_reg(host_ctxt, 1) = pkvm_init_gic_its_emulation(dev_addr, priv_its_state,
+							    priv_num_pages, shadow);
+}
+
+static void handle___pkvm_init_redist_emulation(struct kvm_cpu_context *host_ctxt)
+{
+	DECLARE_REG(phys_addr_t, dev_addr, host_ctxt, 1);
+	DECLARE_REG(void *, redist_state, host_ctxt, 2);
+
+	if (!is_protected_kvm_enabled())
+		return;
+
+	cpu_reg(host_ctxt, 1) =
+		pkvm_init_redist_emulation(dev_addr, redist_state);
 }
 
 static void handle___pkvm_tlb_flush_vmid(struct kvm_cpu_context *host_ctxt)
@@ -2067,6 +2126,8 @@ static const hcall_t host_hcall[] = {
 	HANDLE_FUNC(__pkvm_pviommu_attach),
 	HANDLE_FUNC(__pkvm_pviommu_add_vsid),
 	HANDLE_FUNC(__pkvm_host_get_ffa_version),
+	HANDLE_FUNC(__pkvm_init_its_emulation),
+	HANDLE_FUNC(__pkvm_init_redist_emulation),
 };
 
 static void handle_host_hcall(struct kvm_cpu_context *host_ctxt)

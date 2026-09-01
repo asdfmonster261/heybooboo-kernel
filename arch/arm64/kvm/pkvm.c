@@ -11,6 +11,7 @@
 #include <linux/interval_tree_generic.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/kmemleak.h>
 #include <linux/kvm_host.h>
 #include <asm/kvm_mmu.h>
@@ -179,6 +180,77 @@ static int __init register_moveable_fdt_resource(struct device_node *np,
 	return 0;
 }
 
+static int pkvm_register_gic_redist_cb(phys_addr_t phys, u64 size)
+{
+	unsigned int idx = kvm_nvhe_sym(pkvm_moveable_regs_nr);
+
+	if (idx >= PKVM_NR_MOVEABLE_REGS)
+		return -ENOMEM;
+	if (size < SZ_64K)
+		return -EINVAL;
+
+	moveable_regs[idx].start = phys;
+	moveable_regs[idx].size = SZ_64K;
+	moveable_regs[idx].type = PKVM_MREG_EMULATE_MMIO;
+	moveable_regs[idx].cb = lm_alias(&kvm_nvhe_sym(pkvm_handle_rdist_emulation));
+	idx++;
+
+	/* Skip SGI_Base to avoid bottlenecking vgic with emulation */
+
+	if (size >= 3 * SZ_64K) {
+		if (idx >= PKVM_NR_MOVEABLE_REGS)
+			return -ENOMEM;
+
+		moveable_regs[idx].start = phys + SZ_128K;
+		moveable_regs[idx].size = SZ_64K;
+		moveable_regs[idx].type = PKVM_MREG_EMULATE_MMIO;
+		moveable_regs[idx].cb =
+			lm_alias(&kvm_nvhe_sym(pkvm_handle_vlpi_emulation));
+		idx++;
+	}
+
+	kvm_nvhe_sym(pkvm_moveable_regs_nr) = idx;
+	return 0;
+}
+
+static int __init register_its_emulated_region(void)
+{
+	int ret = 0, i = kvm_nvhe_sym(pkvm_moveable_regs_nr);
+	struct device_node *np;
+	struct resource res;
+
+	for_each_compatible_node(np, NULL, "arm,gic-v3-its") {
+		ret = of_address_to_resource(np, 0, &res);
+		if (ret)
+			return ret;
+
+		if (i >= PKVM_NR_MOVEABLE_REGS) {
+			ret = -ENOMEM;
+			goto out_fail;
+		}
+
+		if (!PAGE_ALIGNED(res.start) || !PAGE_ALIGNED(resource_size(&res))) {
+			ret = -EINVAL;
+			goto out_fail;
+		}
+
+		moveable_regs[i].start = res.start;
+		moveable_regs[i].type = PKVM_MREG_EMULATE_MMIO;
+		moveable_regs[i].cb = lm_alias(&kvm_nvhe_sym(pkvm_handle_gic_emulation));
+		moveable_regs[i].size = min_t(u64, resource_size(&res),
+					      PAGE_ALIGN_DOWN(GITS_TRANSLATER));
+		i++;
+	}
+	kvm_nvhe_sym(pkvm_moveable_regs_nr) = i;
+	return i;
+out_fail:
+	of_node_put(np);
+	kvm_nvhe_sym(pkvm_moveable_regs_nr) = 0;
+	return ret;
+}
+
+DEFINE_STATIC_KEY_FALSE(kvm_its_hardening);
+
 static int __init register_moveable_regions(void)
 {
 	struct memblock_region *reg;
@@ -194,6 +266,20 @@ static int __init register_moveable_regions(void)
 		i++;
 	}
 	kvm_nvhe_sym(pkvm_moveable_regs_nr) = i;
+
+	if (static_branch_unlikely(&kvm_its_hardening)) {
+		ret = register_its_emulated_region();
+		if (ret < 0)
+			return ret;
+
+		ret = gic_pkvm_iter_early_redists(pkvm_register_gic_redist_cb);
+		if (ret < 0) {
+			kvm_err("Failed to register GIC redistributors for emulation: %d\n",
+				ret);
+			kvm_nvhe_sym(pkvm_moveable_regs_nr) = 0;
+			return ret;
+		}
+	}
 
 	for_each_compatible_node(np, NULL, "pkvm,protected-region") {
 		ret = register_moveable_fdt_resource(np, PKVM_MREG_PROTECTED_RANGE);
@@ -228,8 +314,6 @@ static int __init early_hyp_lm_size_mb_cfg(char *arg)
 }
 early_param("kvm-arm.hyp_lm_size_mb", early_hyp_lm_size_mb_cfg);
 
-DEFINE_STATIC_KEY_FALSE(kvm_ffa_unmap_on_lend);
-
 void __init kvm_hyp_reserve(void)
 {
 	u64 hyp_mem_pages = 0;
@@ -261,9 +345,6 @@ void __init kvm_hyp_reserve(void)
 	hyp_mem_pages += hyp_vmemmap_pages(STRUCT_HYP_PAGE_SIZE);
 	hyp_mem_pages += pkvm_selftest_pages();
 	hyp_mem_pages += hyp_ffa_proxy_pages();
-
-	if (static_branch_unlikely(&kvm_ffa_unmap_on_lend))
-		hyp_mem_pages += KVM_FFA_SPM_HANDLE_NR_PAGES;
 
 	hyp_mem_pages++; /* hyp_ppages */
 
@@ -376,7 +457,7 @@ static int __pkvm_notify_guest_vm_avail_retry(struct kvm *host_kvm, u32 availabi
 
 static void __pkvm_destroy_hyp_vm(struct kvm *host_kvm)
 {
-	struct mm_struct *mm = current->mm;
+	struct mm_struct *mm = host_kvm->mm;
 	struct kvm_pinned_page *ppage;
 	struct kvm_vcpu *host_vcpu;
 	unsigned long nr_busy;
@@ -397,7 +478,7 @@ retry:
 		struct kvm_pinned_page *next;
 
 		ret = kvm_call_hyp_nvhe(__pkvm_reclaim_dying_guest_page, host_kvm->arch.pkvm.handle,
-					page_to_pfn(ppage->page), ppage->ipa >> PAGE_SHIFT,
+					ppage->pfn, ppage->ipa >> PAGE_SHIFT,
 					ppage->order);
 		cond_resched();
 		if (ret == -EBUSY) {
@@ -408,9 +489,10 @@ retry:
 		}
 		WARN_ON(ret);
 
-		unpin_user_pages_dirty_lock(&ppage->page, 1, true);
+		pkvm_release_ppage(ppage, true);
 		next = kvm_pinned_pages_iter_next(ppage, 0, ~(0UL));
 		kvm_pinned_pages_remove(ppage, &host_kvm->arch.pkvm.pinned_pages);
+		ppage->slot->arch.pkvm_pf_count--;
 		pages += 1 << ppage->order;
 		kfree(ppage);
 		ppage = next;
@@ -672,16 +754,63 @@ static void __init _kvm_host_prot_finalize(void *arg)
 		WRITE_ONCE(*err, -EINVAL);
 }
 
+#define ITS_PRIV_NUM_PAGES	(2UL)
+
+static int pkvm_init_its_emulation(phys_addr_t dev_addr, struct its_shadow_tables *shadow)
+{
+	size_t its_priv_sz = ITS_PRIV_NUM_PAGES << PAGE_SHIFT;
+	void *its_state;
+	int ret;
+
+	its_state = alloc_pages_exact(its_priv_sz, GFP_ATOMIC);
+	if (!its_state)
+		return -ENOMEM;
+
+	ret = kvm_call_hyp_nvhe(__pkvm_init_its_emulation, dev_addr, its_state, ITS_PRIV_NUM_PAGES,
+				shadow);
+	if (ret)
+		free_pages_exact(its_state, its_priv_sz);
+
+	return ret;
+}
+
+static int pkvm_init_redist_emulation(phys_addr_t dev_addr)
+{
+	void *redist_state;
+	int ret;
+
+	redist_state = (void *)__get_free_page(GFP_ATOMIC);
+	if (!redist_state)
+		return -ENOMEM;
+
+	ret = kvm_call_hyp_nvhe(__pkvm_init_redist_emulation, dev_addr,
+				redist_state);
+	if (ret)
+		free_page((unsigned long)redist_state);
+
+	return ret;
+}
+
 static int __init pkvm_drop_host_privileges(void)
 {
 	int ret = 0;
+	unsigned long its_flags;
 
 	/*
 	 * Flip the static key upfront as that may no longer be possible
 	 * once the host stage 2 is installed.
 	 */
 	static_branch_enable(&kvm_protected_mode_initialized);
+
+	if (static_branch_unlikely(&kvm_its_hardening))
+		its_start_deprivilege(&its_flags);
+
 	on_each_cpu(_kvm_host_prot_finalize, &ret, 1);
+
+	if (static_branch_unlikely(&kvm_its_hardening)) {
+		its_end_deprivilege(ret, &its_flags, &pkvm_init_its_emulation);
+		gic_redist_deprivilege(&pkvm_init_redist_emulation);
+	}
 	return ret;
 }
 
@@ -742,7 +871,7 @@ device_initcall_sync(finalize_pkvm);
 
 void pkvm_host_reclaim_page(struct kvm *host_kvm, phys_addr_t ipa)
 {
-	struct mm_struct *mm = current->mm;
+	struct mm_struct *mm = host_kvm->mm;
 	struct kvm_pinned_page *ppage;
 	u8 order;
 
@@ -751,8 +880,10 @@ void pkvm_host_reclaim_page(struct kvm *host_kvm, phys_addr_t ipa)
 					   ipa, ipa + PAGE_SIZE - 1);
 	if (ppage) {
 		order = ppage->order;
-		if (!order)
+		if (!order) {
 			kvm_pinned_pages_remove(ppage, &host_kvm->arch.pkvm.pinned_pages);
+			ppage->slot->arch.pkvm_pf_count--;
+		}
 	}
 	write_unlock(&host_kvm->mmu_lock);
 
@@ -760,7 +891,7 @@ void pkvm_host_reclaim_page(struct kvm *host_kvm, phys_addr_t ipa)
 		return;
 
 	account_locked_vm(mm, 1 << ppage->order, false);
-	unpin_user_pages_dirty_lock(&ppage->page, 1, true);
+	pkvm_release_ppage(ppage, true);
 	kfree(ppage);
 }
 
@@ -1158,7 +1289,7 @@ static int pkvm_reloc_imported_symbol(struct pkvm_el2_module *importer,
 {
 	u32 insn = le32_to_cpu(*sym->rela_pos);
 	unsigned long hyp_orig, hyp_dst;
-	u64 imm, offset;
+	s64 offset;
 
 	if (!within_pkvm_module_section(&importer->text,
 					(unsigned long)sym->rela_pos)) {
@@ -1177,27 +1308,17 @@ static int pkvm_reloc_imported_symbol(struct pkvm_el2_module *importer,
 
 	hyp_dst = __pkvm_el2_mod_va(exporter, (void *)sym_addr);
 	hyp_orig = __pkvm_el2_mod_va(importer, (void *)sym->rela_pos);
-
-	/*
-	 * Module hyp VAs are allocated going upward. The exporter being loaded
-	 * before the importer, the destination address MUST be lower than the
-	 * origin.
-	 */
-	if (WARN_ON(hyp_dst > hyp_orig))
-		return -EINVAL;
-
-	offset = hyp_orig - hyp_dst;
+	offset = (s64)hyp_dst - (s64)hyp_orig;
 
 	/* imm26 is 2's complement and equals to offset / 4 */
 	offset >>= 2;
-	if (offset > BIT(25)) {
-		pr_warn("Exported symbol %s is too far for the relocation in module %s\n",
-			sym->name, pkvm_el2_mod_to_module(importer)->name);
+	if (offset < -(s64)BIT(25) || offset >= (s64)BIT(25)) {
+		pr_warn("pKVM symbol %s@0x%lx is too far to branch from 0x%lx [%s]\n",
+			sym->name, hyp_dst, hyp_orig, pkvm_el2_mod_to_module(importer)->name);
 		return -ERANGE;
 	}
 
-	imm = -offset;
-	insn = aarch64_insn_encode_immediate(AARCH64_INSN_IMM_26, insn, imm);
+	insn = aarch64_insn_encode_immediate(AARCH64_INSN_IMM_26, insn, offset);
 
 	return aarch64_insn_patch_text_nosync((void *)sym->rela_pos, insn);
 }
@@ -1874,6 +1995,9 @@ int pkvm_pgtable_stage2_flush(struct kvm_pgtable *pgt, u64 addr, u64 size)
 	struct kvm *kvm = kvm_s2_mmu_to_kvm(pgt->mmu);
 	struct pkvm_mapping *mapping;
 
+	if (cpus_have_final_cap(ARM64_HAS_STAGE2_FWB) && !(pgt->flags & KVM_PGTABLE_S2_NOFWB))
+		return 0;
+
 	lockdep_assert_held(&kvm->mmu_lock);
 	for_each_mapping_in_range_safe(pgt, addr, addr + size, mapping)
 		__clean_dcache_guest_page(pfn_to_kaddr(mapping->pfn), PAGE_SIZE * mapping->nr_pages);
@@ -1924,8 +2048,30 @@ int pkvm_pgtable_stage2_split(struct kvm_pgtable *pgt, u64 addr, u64 size, void 
 
 static int early_ffa_unmap_on_lend_cfg(char *arg)
 {
-	static_branch_enable(&kvm_ffa_unmap_on_lend);
+	bool enable;
+
+	if (!arg)
+		kvm_nvhe_sym(__pkvm_ffa_unmap_on_lend) = PKVM_FFA_UNMAP_ON_LEND_ON;
+	else if (!strcmp(arg, "full"))
+		kvm_nvhe_sym(__pkvm_ffa_unmap_on_lend) = PKVM_FFA_UNMAP_ON_LEND_FULL;
+	else {
+		if (!kstrtobool(arg, &enable)) {
+			kvm_nvhe_sym(__pkvm_ffa_unmap_on_lend) = enable;
+		} else {
+			kvm_err("kvm-arm.ffa-unmap-on-lend: Unknown argument '%s'\n", arg);
+			return -EINVAL;
+		}
+	}
+
 	return 0;
 }
 
 early_param("kvm-arm.ffa-unmap-on-lend", early_ffa_unmap_on_lend_cfg);
+
+static int early_its_hardening_cfg(char *arg)
+{
+	static_branch_enable(&kvm_its_hardening);
+	return 0;
+}
+
+early_param("kvm-arm.its_hardening", early_its_hardening_cfg);

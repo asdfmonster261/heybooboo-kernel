@@ -8,6 +8,7 @@
 #include <linux/psi.h>
 #include <linux/cpuhotplug.h>
 #include <trace/events/erofs.h>
+#include <trace/hooks/fs.h>
 
 #define Z_EROFS_PCLUSTER_MAX_PAGES	(Z_EROFS_PCLUSTER_MAX_SIZE / PAGE_SIZE)
 #define Z_EROFS_INLINE_BVECS		2
@@ -1322,6 +1323,8 @@ static int z_erofs_decompress_pcluster(struct z_erofs_backend *be, bool eio)
 					.sb = be->sb,
 					.in = be->compressed_pages,
 					.out = be->decompressed_pages,
+					.inpages = pclusterpages,
+					.outpages = be->nr_pages,
 					.pageofs_in = pcl->pageofs_in,
 					.pageofs_out = pcl->pageofs_out,
 					.inputsize = pcl->pclustersize,
@@ -1455,6 +1458,7 @@ static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
 				       int bios)
 {
 	struct erofs_sb_info *const sbi = EROFS_SB(io->sb);
+	int gfp_flag;
 
 	/* wake up the caller thread for sync decompression */
 	if (io->sync) {
@@ -1487,7 +1491,9 @@ static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
 			sbi->opt.sync_decompress = EROFS_SYNC_DECOMPRESS_FORCE_ON;
 		return;
 	}
+	gfp_flag = memalloc_noio_save();
 	z_erofs_decompressqueue_work(&io->u.work);
+	memalloc_noio_restore(gfp_flag);
 }
 
 static void z_erofs_fill_bio_vec(struct bio_vec *bvec,
@@ -1651,6 +1657,8 @@ static void z_erofs_endio(struct bio *bio)
 	blk_status_t err = bio->bi_status;
 	struct folio_iter fi;
 
+	trace_android_vh_erofs_iostat_update(q->sb, bio);
+
 	bio_for_each_folio_all(fi, bio) {
 		struct folio *folio = fi.folio;
 
@@ -1727,9 +1735,10 @@ drain_io:
 					erofs_fileio_submit_bio(bio);
 				else if (erofs_is_fscache_mode(sb))
 					erofs_fscache_submit_bio(bio);
-				else
+				else {
+					trace_android_vh_erofs_iostat_submit(sb, bio);
 					submit_bio(bio);
-
+				}
 				if (memstall) {
 					psi_memstall_leave(&pflags);
 					memstall = 0;
@@ -1787,8 +1796,10 @@ drain_io:
 			erofs_fileio_submit_bio(bio);
 		else if (erofs_is_fscache_mode(sb))
 			erofs_fscache_submit_bio(bio);
-		else
+		else {
+			trace_android_vh_erofs_iostat_submit(sb, bio);
 			submit_bio(bio);
+		}
 	}
 	if (memstall)
 		psi_memstall_leave(&pflags);

@@ -223,6 +223,16 @@
   blkcg_root
   blkcg_activate_policy
 
+#required by iostat.ko
+  __traceiter_android_vh_erofs_iostat_submit
+  __traceiter_android_vh_erofs_iostat_update
+  __tracepoint_android_vh_erofs_iostat_submit
+  __tracepoint_android_vh_erofs_iostat_update
+  __traceiter_android_vh_f2fs_iostat_submit
+  __traceiter_android_vh_f2fs_iostat_update
+  __tracepoint_android_vh_f2fs_iostat_submit
+  __tracepoint_android_vh_f2fs_iostat_update
+
 # required by mi_damon.ko
   folio_deactivate
   folio_mark_accessed
@@ -549,11 +559,13 @@ reuseport_select_sock
 __traceiter_android_vh_remove_mapping
 __traceiter_android_vh_remove_mapping_failed
 __traceiter_android_vh_filemap_get_folio_end
+__traceiter_android_vh_unlock_mmap_bypass
 __traceiter_android_vh_do_new_mount_fc
 __traceiter_android_vh_put_super
 __tracepoint_android_vh_remove_mapping
 __tracepoint_android_vh_remove_mapping_failed
 __tracepoint_android_vh_filemap_get_folio_end
+__tracepoint_android_vh_unlock_mmap_bypass
 __tracepoint_android_vh_do_new_mount_fc
 __tracepoint_android_vh_put_super
 LZ4_compress_default
@@ -658,3 +670,8 @@ __tracepoint_android_vh_mm_direct_reclaim_end
 __traceiter_android_vh_mm_direct_reclaim_end
 try_to_free_pages
 
+# folio writeback hooks
+__tracepoint_android_vh_folio_end_writeback
+__traceiter_android_vh_folio_end_writeback
+__tracepoint_android_vh_folio_start_writeback
+__traceiter_android_vh_folio_start_writeback

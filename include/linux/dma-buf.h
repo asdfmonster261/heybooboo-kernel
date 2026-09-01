@@ -27,6 +27,7 @@
 #include <linux/android_kabi.h>
 #include <linux/refcount.h>
 #include <linux/atomic.h>
+#include <linux/jump_label.h>
 
 struct device;
 struct dma_buf;
@@ -766,7 +767,6 @@ int dma_buf_fd(struct dma_buf *dmabuf, int flags);
 struct dma_buf *dma_buf_get(int fd);
 void dma_buf_put(struct dma_buf *dmabuf);
 
-void dma_buf_mangle_sg_table(struct sg_table *sg_table);
 struct sg_table *dma_buf_map_attachment(struct dma_buf_attachment *,
 					enum dma_data_direction);
 void dma_buf_unmap_attachment(struct dma_buf_attachment *, struct sg_table *,
@@ -810,6 +810,17 @@ void get_dmabuf_info(struct task_dma_buf_info *dmabuf_info);
 void put_dmabuf_info(struct task_dma_buf_info *dmabuf_info);
 int dma_buf_begin_new_exec(struct files_struct *old_files);
 
+DECLARE_STATIC_KEY_TRUE(dmabuf_accounting_key);
+/**
+ * is_dmabuf_accounting_enabled - Check if dmabuf accounting is enabled
+ *
+ * Return: true if enabled, false otherwise
+ */
+static inline bool is_dmabuf_accounting_enabled(void)
+{
+	return static_branch_likely(&dmabuf_accounting_key);
+}
+
 #else /* CONFIG_DMA_SHARED_BUFFER */
 
 static inline int is_dma_buf_file(struct file *file) { return 0; }
@@ -823,6 +834,7 @@ static inline void get_dmabuf_info(struct task_dma_buf_info *dmabuf_info) {}
 static inline void put_dmabuf_info(struct task_dma_buf_info *dmabuf_info) {}
 static inline int dma_buf_begin_new_exec(struct files_struct *old_files) { return 0; }
 
+static inline bool is_dmabuf_accounting_enabled(void) { return false; }
 #endif /* CONFIG_DMA_SHARED_BUFFER */
 
 #endif /* __DMA_BUF_H__ */

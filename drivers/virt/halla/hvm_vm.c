@@ -109,11 +109,15 @@ hvm_vm_ioctl_set_memory_region(struct hvm *hvm,
 
 	memslot = &hvm->memslot[mem->slot];
 
+	mmap_read_lock(hvm->mm);
 	vma = vma_lookup(hvm->mm, mem->userspace_addr);
-	if (!vma)
+	if (!vma) {
+		mmap_read_unlock(hvm->mm);
 		return -EFAULT;
+	}
 
 	size = vma->vm_end - vma->vm_start;
+	mmap_read_unlock(hvm->mm);
 	if (size != mem->memory_size)
 		return -EINVAL;
 
@@ -373,9 +377,67 @@ static void hvm_destroy_all_ppage(struct hvm *hvm)
 	}
 }
 
+static void hvm_drain_ioevents(struct hvm *hvm)
+{
+	struct hvm_ioevent *p, *tmp;
+
+	mutex_lock(&hvm->ioevent_lock);
+	list_for_each_entry_safe(p, tmp, &hvm->ioevents, list) {
+		eventfd_ctx_put(p->evt_ctx);
+		list_del(&p->list);
+		kfree(p);
+	}
+	mutex_unlock(&hvm->ioevent_lock);
+}
+
+/**
+ * __hvm_vm_release() - Final teardown when the last reference is dropped.
+ * @kref: kref embedded in struct hvm.
+ *
+ * Runs only after the VM fd and every vcpu fd have been closed, so no
+ * further hvc entries are possible against this VM.  Tears down the
+ * remaining hypervisor-side state, drains the ioevents list (whose
+ * nodes were leaked at VM teardown previously), drops the mm
+ * reference taken at create_vm time, and frees struct hvm.
+ */
+static void __hvm_vm_release(struct kref *kref)
+{
+	struct hvm *hvm = container_of(kref, struct hvm, kref);
+
+	exynos_hvc(HVC_FID_HVM_DESTROY_VM,
+		   hvm->vm_id, 0, 0, 0);
+
+	hvm_destroy_vm_debugfs(hvm);
+
+	hvm_drain_ioevents(hvm);
+
+	mmdrop(hvm->mm);
+	kfree(hvm);
+}
+
+void hvm_vm_get(struct hvm *hvm)
+{
+	kref_get(&hvm->kref);
+}
+
+void hvm_vm_put(struct hvm *hvm)
+{
+	kref_put(&hvm->kref, __hvm_vm_release);
+}
+
+/**
+ * hvm_destroy_vm() - VM fd release path.
+ *
+ * Tears down everything that owns guest memory or hypervisor S2
+ * resources, detaches the live vcpus from the hypervisor, removes
+ * the VM from hvm_list, then drops the VM fd's kref.  The struct
+ * hvm itself stays alive as long as any vcpu fd still holds a
+ * reference, so a vcpu ioctl racing with VM fd close stays on
+ * valid memory until the vcpu fd is also closed.
+ */
 static void hvm_destroy_vm(struct hvm *hvm)
 {
-	unsigned long ret = 0;
+	unsigned long ret;
 
 	mutex_lock(&hvm->lock);
 
@@ -387,11 +449,6 @@ static void hvm_destroy_vm(struct hvm *hvm)
 	hvm_reclaim_guest_stage2_pgtable(hvm);
 
 	hvm_destroy_vcpus(hvm);
-
-	exynos_hvc(HVC_FID_HVM_DESTROY_VM,
-		   hvm->vm_id, 0, 0, 0);
-
-	hvm_destroy_vm_debugfs(hvm);
 
 	mutex_lock(&hvm_list_lock);
 	list_del(&hvm->vm_list);
@@ -411,8 +468,7 @@ static void hvm_destroy_vm(struct hvm *hvm)
 		hvm_destroy_all_ppage(hvm);
 	}
 
-	mmdrop(hvm->mm);
-	kfree(hvm);
+	hvm_vm_put(hvm);
 }
 
 void hvm_destroy_all_vms(void)
@@ -461,6 +517,9 @@ static long hvm_vm_ioctl(struct file *filp, unsigned int ioctl,
 	long ret;
 	void __user *argp = (void __user *)arg;
 	struct hvm *hvm = filp->private_data;
+
+	if (hvm->mm != current->mm)
+		return -EIO;
 
 	switch (ioctl) {
 	case HVM_CHECK_EXTENSION: {
@@ -595,6 +654,7 @@ int hvm_dev_ioctl_create_vm(unsigned long vm_type)
 	hvm->vm_id = ret;
 	mmgrab(current->mm);
 	hvm->mm = current->mm;
+	kref_init(&hvm->kref);
 	mutex_init(&hvm->lock);
 	mutex_init(&hvm->mem_lock);
 	hvm->pinned_pages = RB_ROOT;

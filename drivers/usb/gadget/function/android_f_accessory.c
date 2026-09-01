@@ -505,7 +505,7 @@ static void acc_complete_send_hid_event(struct usb_ep *ep,
 		return;
 	}
 
-	hid_report_raw_event(hid->hid, HID_INPUT_REPORT, req->buf, length, 1);
+	__hid_report_raw_event(hid->hid, HID_INPUT_REPORT, req->buf, length, length, 1);
 }
 
 static int acc_hid_parse(struct hid_device *hid)
@@ -551,6 +551,7 @@ static struct hid_ll_driver acc_hid_ll_driver = {
 	.open = acc_hid_open,
 	.close = acc_hid_close,
 	.raw_request = acc_hid_raw_request,
+	.max_buffer_size = USB_COMP_EP0_BUFSIZ,
 };
 
 static struct acc_hid_dev *acc_hid_new(struct acc_dev *dev,

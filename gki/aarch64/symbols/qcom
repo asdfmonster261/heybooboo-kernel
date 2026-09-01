@@ -734,6 +734,7 @@
   dev_pm_qos_remove_notifier
   dev_pm_qos_remove_request
   dev_pm_qos_update_request
+  dev_pm_set_dedicated_wake_irq
   dev_pm_set_wake_irq
   _dev_printk
   __dev_queue_xmit
@@ -963,6 +964,7 @@
   drm_edid_is_valid
   drm_edid_raw
   drm_edid_read_ddc
+  drm_edid_to_speaker_allocation
   drm_encoder_cleanup
   drm_encoder_init
   __drm_err
@@ -1106,6 +1108,7 @@
   __ethtool_get_link_ksettings
   ethtool_op_get_link
   ethtool_op_get_ts_info
+  ethtool_params_from_link_mode
   ethtool_sprintf
   ethtool_virtdev_set_link_ksettings
   eth_type_trans
@@ -1214,6 +1217,8 @@
   genl_register_family
   genl_unregister_family
   __genphy_config_aneg
+  genphy_c45_pma_read_ext_abilities
+  genphy_c45_read_lpa
   genphy_read_abilities
   genphy_read_mmd_unsupported
   genphy_read_status
@@ -1249,6 +1254,7 @@
   get_net_ns_by_pid
   get_option
   get_page_owner_handle
+  get_phy_device
   get_pid_task
   get_random_bytes
   get_random_u16
@@ -1831,6 +1837,7 @@
   l2tp_tunnel_register
   l2tp_udp_encap_recv
   l2tp_xmit_skb
+  led_blink_set_oneshot
   led_classdev_flash_register_ext
   led_classdev_flash_unregister
   led_classdev_unregister
@@ -1840,6 +1847,7 @@
   led_set_brightness_sync
   led_set_flash_brightness
   led_set_flash_timeout
+  led_stop_software_blink
   led_trigger_event
   led_trigger_register
   led_trigger_register_simple
@@ -1886,6 +1894,7 @@
   mdiobus_modify_changed
   __mdiobus_read
   mdiobus_read
+  __mdiobus_modify_changed
   __mdiobus_register
   mdiobus_unregister
   __mdiobus_write
@@ -1995,6 +2004,7 @@
   __netdev_alloc_skb
   netdev_change_features
   netdev_err
+  netdev_features_change
   netdev_increment_features
   netdev_info
   netdev_lower_state_changed
@@ -2096,6 +2106,7 @@
   ns_to_timespec64
   n_tty_ioctl_helper
   __num_online_cpus
+  nvmem_add_one_cell
   nvmem_cell_get
   nvmem_cell_put
   nvmem_cell_read
@@ -2105,6 +2116,10 @@
   nvmem_cell_write
   nvmem_device_read
   nvmem_device_write
+  __nvmem_layout_driver_register
+  nvmem_layout_driver_unregister
+  nvmem_layout_register
+  nvmem_layout_unregister
   of_address_to_resource
   of_alias_from_compatible
   of_alias_get_id
@@ -2152,6 +2167,7 @@
   of_get_child_by_name
   of_get_cpu_node
   of_get_mac_address
+  of_get_mac_address_nvmem
   of_get_named_gpio
   of_get_next_available_child
   of_get_next_child
@@ -2182,6 +2198,7 @@
   of_n_addr_cells
   of_node_name_eq
   of_n_size_cells
+  of_nvmem_layout_get_container
   __of_parse_phandle_with_args
   of_pci_parse_bus_range
   of_phandle_iterator_init
@@ -2229,6 +2246,7 @@
   page_pool_put_unrefed_page
   panic
   panic_notifier_list
+  panic_reboot_mode
   panic_timeout
   param_array_ops
   param_get_int
@@ -2252,6 +2270,7 @@
   pci_bus_add_devices
   pci_bus_assign_resources
   pci_bus_claim_resources
+  pci_bus_error_reset
   pci_bus_size_bridges
   pci_bus_type
   pci_clear_and_set_config_dword
@@ -2268,6 +2287,8 @@
   pci_ecam_map_bus
   pcie_capability_clear_and_set_word_unlocked
   pcie_capability_read_word
+  pcie_capability_write_word
+  pcie_do_recovery
   pci_enable_device
   pci_find_ext_capability
   pci_find_vsec_capability
@@ -2278,6 +2299,7 @@
   pci_get_device
   pci_get_domain_bus_and_slot
   pci_host_common_probe
+  pci_host_handle_link_down
   pci_host_probe
   pci_iomap
   pci_iounmap
@@ -2334,6 +2356,8 @@
   phy_attached_info
   phy_calibrate
   phy_connect
+  phy_device_free
+  phy_device_register
   phy_disconnect
   phy_do_ioctl_running
   phy_drivers_register
@@ -2348,6 +2372,7 @@
   phy_init
   phy_init_eee
   phy_init_hw
+  phy_lookup_setting
   phylink_connect_phy
   phylink_create
   phylink_destroy
@@ -3469,6 +3494,7 @@
   __traceiter_android_vh_show_resume_epoch_val
   __traceiter_android_vh_show_suspend_epoch_val
   __traceiter_android_vh_skip_swap_map_write
+  __traceiter_android_vh_snd_pcm_check_no_buffer
   __traceiter_android_vh_switching_to_scx
   __traceiter_android_vh_thermal_pm_notify_suspend
   __traceiter_android_vh_timer_calc_index
@@ -3631,6 +3657,7 @@
   __tracepoint_android_vh_ufs_update_sdev
   __tracepoint_android_vh_update_topology_flags_workfn
   __tracepoint_android_vh_xhci_handle_offload
+  __tracepoint_android_vh_snd_pcm_check_no_buffer
   __tracepoint_binder_transaction_received
   __tracepoint_cpu_frequency_limits
   __tracepoint_cpu_idle
@@ -4062,6 +4089,8 @@
   vsnprintf
   vsprintf
   vunmap
+  vunmap_range_noflush
+  __vunmap_range_noflush
   vzalloc_noprof
   wait_for_completion
   wait_for_completion_interruptible
