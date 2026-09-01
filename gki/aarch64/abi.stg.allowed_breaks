@@ -134,3 +134,11 @@ type 'struct bindings::bindings_raw::files_struct' changed
     type changed from 'u32[8]' to 'u32[6]'
       number of elements changed from 8 to 6
 
+type 'struct rb_thread_layout' changed
+  member 'u64 __kabi_reserved_backport0' was removed
+  member 'union { size_t task; struct { u64 __kabi_reserved_backport0; }; union { }; }' was added
+
+type 'struct usb_device' changed
+  member 'union { unsigned int offload_at_suspend:1; struct { u64 __kabi_reserved1; }; union { }; }' was removed
+  member 'union { struct { unsigned int offload_at_suspend:1; unsigned int offload_pm_locked:1; }; struct { u64 __kabi_reserved1; }; union { }; }' was added
+

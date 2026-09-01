@@ -149,7 +149,12 @@ int hvm_inject_irq(struct hvm *hvm, unsigned int vcpu_idx,
 {
 	unsigned long ret;
 	u64 ids;
-	struct hvm_vcpu *vcpu = hvm->vcpus[vcpu_idx];
+	struct hvm_vcpu *vcpu;
+
+	if (vcpu_idx >= HVM_MAX_VCPUS)
+		return -EINVAL;
+
+	vcpu = hvm->vcpus[vcpu_idx];
 
 	ids = (u32)hvm->vm_id;
 	ids = (ids << 16) | vcpu_idx;
@@ -181,6 +186,7 @@ static int hvm_vm_ioctl_create_device(struct hvm *hvm, void __user *argp)
 {
 	struct hvm_create_device *hvm_dev;
 	void *dev_data = NULL;
+	size_t attr_size = 0;
 	int ret;
 
 	hvm_dev = alloc_pages_exact(PAGE_SIZE, GFP_KERNEL);
@@ -193,8 +199,9 @@ static int hvm_vm_ioctl_create_device(struct hvm *hvm, void __user *argp)
 	}
 
 	if (hvm_dev->attr_addr != 0 && hvm_dev->attr_size != 0) {
-		size_t attr_size = hvm_dev->attr_size;
 		void __user *attr_addr = u64_to_user_ptr(hvm_dev->attr_addr);
+
+		attr_size = hvm_dev->attr_size;
 
 		/* Size of device specific data should not be over a page. */
 		if (attr_size > PAGE_SIZE) {
@@ -219,9 +226,9 @@ static int hvm_vm_ioctl_create_device(struct hvm *hvm, void __user *argp)
 			hvm->vm_id, virt_to_phys(hvm_dev), 0, 0);
 err_free_dev_data:
 	if (dev_data)
-		free_pages_exact(dev_data, 0);
+		free_pages_exact(dev_data, attr_size);
 err_free_dev:
-	free_pages_exact(hvm_dev, 0);
+	free_pages_exact(hvm_dev, PAGE_SIZE);
 	return ret;
 }
 
@@ -279,7 +286,7 @@ static int set_dtb_config(struct hvm *hvm, struct hvm_dtb_config *cfg)
 	return (int)ret;
 }
 
-static unsigned long hvm_pre_destory_vm(struct hvm *hvm)
+static unsigned long hvm_pre_destroy_vm(struct hvm *hvm)
 {
 	return exynos_hvc(HVC_FID_HVM_PRE_DESTROY_VM,
 			  hvm->vm_id, 0, 0, 0);
@@ -372,7 +379,7 @@ static void hvm_destroy_vm(struct hvm *hvm)
 
 	mutex_lock(&hvm->lock);
 
-	hvm_pre_destory_vm(hvm);
+	hvm_pre_destroy_vm(hvm);
 
 	hvm_vm_irqfd_release(hvm);
 
@@ -404,22 +411,21 @@ static void hvm_destroy_vm(struct hvm *hvm)
 		hvm_destroy_all_ppage(hvm);
 	}
 
+	mmdrop(hvm->mm);
 	kfree(hvm);
 }
 
 void hvm_destroy_all_vms(void)
 {
 	struct hvm *hvm, *tmp;
+	LIST_HEAD(vms_to_destroy);
 
 	mutex_lock(&hvm_list_lock);
-	if (list_empty(&hvm_list))
-		goto out;
-
-	list_for_each_entry_safe(hvm, tmp, &hvm_list, vm_list)
-		hvm_destroy_vm(hvm);
-
-out:
+	list_splice_init(&hvm_list, &vms_to_destroy);
 	mutex_unlock(&hvm_list_lock);
+
+	list_for_each_entry_safe(hvm, tmp, &vms_to_destroy, vm_list)
+		hvm_destroy_vm(hvm);
 }
 
 int hvm_check_extension(struct hvm *hvm, u64 cap, void __user *argp)
@@ -587,6 +593,7 @@ int hvm_dev_ioctl_create_vm(unsigned long vm_type)
 	}
 
 	hvm->vm_id = ret;
+	mmgrab(current->mm);
 	hvm->mm = current->mm;
 	mutex_init(&hvm->lock);
 	mutex_init(&hvm->mem_lock);
@@ -594,30 +601,35 @@ int hvm_dev_ioctl_create_vm(unsigned long vm_type)
 
 	ret = hvm_vm_irqfd_init(hvm);
 	if (ret) {
+		mmdrop(hvm->mm);
 		kfree(hvm);
 		return ret;
 	}
 
 	ret = hvm_init_ioeventfd(hvm);
 	if (ret) {
+		mmdrop(hvm->mm);
 		kfree(hvm);
 		return ret;
 	}
 
 	ret = hvm_init_vm_stage2_mmu(hvm);
 	if (ret) {
+		mmdrop(hvm->mm);
 		kfree(hvm);
 		return ret;
 	}
 
 	ret = hvm_create_vm_debugfs(hvm);
 	if (ret) {
+		mmdrop(hvm->mm);
 		kfree(hvm);
 		return ret;
 	}
 
 	ret = hvm_arch_drv_init(hvm);
 	if (ret) {
+		mmdrop(hvm->mm);
 		kfree(hvm);
 		return ret;
 	}

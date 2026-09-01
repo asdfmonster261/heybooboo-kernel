@@ -15,13 +15,13 @@
 #include "hvm_drv.h"
 
 /**
- * ioeventfd_check_collision() - Check collison assumes hvm->ioevent_lock held.
+ * ioeventfd_check_collision() - Check collision assumes hvm->ioevent_lock held.
  * @: Pointer to hvm.
  * @p: Pointer to hvm_ioevent.
  *
  * Return:
- * * true			- collison found
- * * false			- no collison
+ * * true			- collision found
+ * * false			- no collision
  */
 static bool ioeventfd_check_collision(struct hvm *hvm, struct hvm_ioevent *p)
 {
@@ -145,8 +145,10 @@ static int hvm_assign_ioeventfd(struct hvm *hvm,
 		return PTR_ERR(evt_ctx);
 
 	evt = kmalloc(sizeof(*evt), GFP_KERNEL);
-	if (!evt)
+	if (!evt) {
+		eventfd_ctx_put(evt_ctx);
 		return -ENOMEM;
+	}
 	*evt = (struct hvm_ioevent) {
 		.addr = args->addr,
 		.len = args->len,

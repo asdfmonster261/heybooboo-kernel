@@ -24,11 +24,6 @@ void *memset(void *dst, int c, size_t count)
 	return CALL_FROM_OPS(memset, dst, c, count);
 }
 
-void *memcpy(void *dst, const void *src, size_t count)
-{
-	return CALL_FROM_OPS(memcpy, dst, src, count);
-}
-
 #ifdef CONFIG_LIST_HARDENED
 bool __list_add_valid_or_report(struct list_head *new,
 				struct list_head *prev,
@@ -1548,6 +1543,14 @@ static size_t smmu_unmap_pages(struct kvm_hyp_iommu_domain *domain, unsigned lon
 		total_unmapped += unmapped;
 		pgcount -= unmapped / pgsize;
 	}
+
+	/*
+	 * Eagerly drain the gather list before the core code does to Keep
+	 * the page table walk locked.
+	 */
+	smmu_iotlb_sync(domain, gather);
+	gather->pgsize = 0;
+	iommu_iotlb_gather_init(gather);
 	hyp_spin_unlock(&smmu_domain->pgt_lock);
 	return total_unmapped;
 }
@@ -1657,7 +1660,7 @@ static int smmu_dev_block_dma(struct kvm_hyp_iommu *iommu, u32 sid, bool is_host
 							    STRTAB_STE_0_S1CTXPTR_MASK);
 				nr_entries = 1 << FIELD_GET(STRTAB_STE_0_S1CDMAX,
 							    le64_to_cpu(dst->data[0]));
-				cd_sz = (1 << nr_entries) * (CTXDESC_CD_DWORDS << 3);
+				cd_sz = nr_entries * (CTXDESC_CD_DWORDS << 3);
 			}
 			/* zap zippity zop. */
 			for (i = 0; i < STRTAB_STE_DWORDS; i++)

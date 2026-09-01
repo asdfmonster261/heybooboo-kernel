@@ -7717,12 +7717,18 @@ static void __sched notrace __schedule(int sched_mode)
 	struct rq *rq;
 	bool prev_not_proxied;
 	int cpu;
+	bool skip_schedule = false;
 
 	cpu = smp_processor_id();
 	rq = cpu_rq(cpu);
 	prev = rq->curr;
 
 	schedule_debug(prev, preempt);
+
+	trace_android_vh_lock_delay_schedule(prev, sched_mode, &skip_schedule);
+
+	if (skip_schedule)
+		return;
 
 	if (sched_feat(HRTICK) || sched_feat(HRTICK_DL))
 		hrtick_clear(rq);
@@ -7781,6 +7787,19 @@ static void __sched notrace __schedule(int sched_mode)
 		block = try_to_block_task(rq, prev, &prev_state,
 					  !task_is_blocked(prev));
 		switch_count = &prev->nvcsw;
+	} else if (preempt && prev->blocked_on) {
+		/*
+		 * If we are SM_PREEMPT, we may have interrupted
+		 * after blocked_on was set, before schedule()
+		 * was run, preventing workques from running. So
+		 * clear blocked_on and mark task RUNNING so it
+		 * can be reselected to run and complete its
+		 * logic
+		 */
+		if (prev_state & TASK_NORMAL) {
+			WRITE_ONCE(prev->__state, TASK_RUNNING);
+			force_blocked_on_runnable(prev);
+		}
 	}
 
 	prev_not_proxied = !prev->blocked_donor;

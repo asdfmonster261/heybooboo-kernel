@@ -5,6 +5,7 @@
 #include <uapi/linux/android/binder.h>
 #include <uapi/linux/android/binderfs.h>
 #include <linux/android_kabi.h>
+#include <linux/compiler.h>
 
 /*
  * These symbols are exposed by `rust_binderfs.c` and exist here so that Rust
@@ -44,7 +45,7 @@ struct rb_thread_layout {
 	size_t arc_offset;
 	size_t process;
 	size_t id;
-	ANDROID_BACKPORT_RESERVE(0);
+	ANDROID_BACKPORT_USE(0, size_t task);
 	ANDROID_BACKPORT_RESERVE(1);
 	ANDROID_BACKPORT_RESERVE(2);
 	ANDROID_BACKPORT_RESERVE(3);
@@ -133,9 +134,29 @@ static inline s32 rust_binder_thread_id(rust_binder_thread t)
 	return * (s32 *) (t + RUST_BINDER_LAYOUT.th.id);
 }
 
+/*
+ * Binder thread exit (BINDER_THREAD_EXIT) or process deferred_release may set
+ * this field to NULL. So unless you are called from ioctl context of this
+ * specific thread, the task may be null and should be used under
+ * rcu_read_lock().
+ */
+static inline struct task_struct *rust_binder_thread_task(rust_binder_thread t)
+{
+	struct task_struct **task = (struct task_struct **) (t + RUST_BINDER_LAYOUT.th.task);
+
+	return READ_ONCE(*task);
+}
+
+/*
+ * Binder process deferred_release may set this field to NULL, so unless you
+ * are called from ioctl context on the process itself, this may be null and
+ * should be used under rcu_read_lock().
+ */
 static inline struct task_struct *rust_binder_process_task(rust_binder_process t)
 {
-	return * (struct task_struct **) (t + RUST_BINDER_LAYOUT.p.task);
+	struct task_struct **task = (struct task_struct **) (t + RUST_BINDER_LAYOUT.p.task);
+
+	return READ_ONCE(*task);
 }
 
 static inline size_t rust_binder_node_debug_id(rust_binder_node t)
@@ -147,5 +168,15 @@ static inline binder_uintptr_t rust_binder_node_ptr(rust_binder_node t)
 {
 	return * (binder_uintptr_t *) (t + RUST_BINDER_LAYOUT.n.ptr);
 }
+
+/*
+ * Constants for bitflag passed to `android_vh_rust_binder_looper_entry`. A
+ * registered looper is one created after the driver requested its creation
+ * with BR_SPAWN_LOOPER, and an entered looper is one that userspace decided to
+ * create on its own volition.
+ */
+#define RB_LOOPER_REGISTERED 0x01
+#define RB_LOOPER_ENTERED 0x02
+#define RB_LOOPER_EXITED 0x04
 
 #endif
