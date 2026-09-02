@@ -20,11 +20,21 @@
 #include <linux/compat.h>
 #include <linux/iversion.h>
 
+#ifdef CONFIG_KSU_SUSFS
+#include <linux/susfs_def.h>
+#include <linux/version.h>
+#endif
 #include <linux/uaccess.h>
 #include <asm/unistd.h>
 
 #include "internal.h"
 #include "mount.h"
+
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+extern void susfs_sus_kstat_spoof_generic_fillattr(struct inode *inode, struct kstat *stat);
+extern int susfs_get_non_sus_mnt_id_from_mnt(struct mount *orig_mnt);
+extern u64 susfs_get_non_sus_mnt_id_unique_from_mnt(struct mount *orig_mnt);
+#endif
 
 /**
  * generic_fillattr - Fill in the basic attributes from the inode struct
@@ -62,6 +72,9 @@ void generic_fillattr(struct mnt_idmap *idmap, u32 request_mask,
 	stat->ctime = inode_get_ctime(inode);
 	stat->blksize = i_blocksize(inode);
 	stat->blocks = inode->i_blocks;
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
+#endif
 
 	if ((request_mask & STATX_CHANGE_COOKIE) && IS_I_VERSION(inode)) {
 		stat->result_mask |= STATX_CHANGE_COOKIE;
@@ -163,9 +176,20 @@ int vfs_getattr_nosec(const struct path *path, struct kstat *stat,
 
 	idmap = mnt_idmap(path->mnt);
 	if (inode->i_op->getattr)
+#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
+	{
+		int err = inode->i_op->getattr(idmap, path, stat,
+					    request_mask,
+					    query_flags | AT_GETATTR_NOSEC);
+		if (!err)
+			susfs_sus_kstat_spoof_generic_fillattr(inode, stat);
+		return err;
+	}
+#else
 		return inode->i_op->getattr(idmap, path, stat,
 					    request_mask,
 					    query_flags | AT_GETATTR_NOSEC);
+#endif
 
 	generic_fillattr(idmap, request_mask, inode, stat);
 	return 0;
@@ -218,6 +242,12 @@ EXPORT_SYMBOL_NS(vfs_getattr, ANDROID_GKI_VFS_EXPORT_ONLY);
  *
  * 0 will be returned on success, and a -ve error code if unsuccessful.
  */
+
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_is_init_rc_hook_enabled;
+extern void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr);
+#endif // #ifdef CONFIG_KSU_SUSFS
+
 int vfs_fstat(int fd, struct kstat *stat)
 {
 	struct fd f;
@@ -227,6 +257,10 @@ int vfs_fstat(int fd, struct kstat *stat)
 	if (!fd_file(f))
 		return -EBADF;
 	error = vfs_getattr(&fd_file(f)->f_path, stat, STATX_BASIC_STATS, 0);
+#ifdef CONFIG_KSU_SUSFS
+	if (static_branch_unlikely(&ksu_is_init_rc_hook_enabled))
+		ksu_handle_vfs_fstat(fd, &stat->size);
+#endif // #ifdef CONFIG_KSU_SUSFS
 	fdput(f);
 	return error;
 }
@@ -251,10 +285,26 @@ static int vfs_statx_path(struct path *path, int flags, struct kstat *stat,
 	int error = vfs_getattr(path, stat, request_mask, flags);
 
 	if (request_mask & STATX_MNT_ID_UNIQUE) {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+		if (real_mount(path->mnt)->mnt_id >= DEFAULT_KSU_MNT_ID &&
+			likely(susfs_is_current_proc_umounted_app()))
+			stat->mnt_id = susfs_get_non_sus_mnt_id_unique_from_mnt(real_mount(path->mnt));
+		else
+			stat->mnt_id = real_mount(path->mnt)->mnt_id_unique;
+#else
 		stat->mnt_id = real_mount(path->mnt)->mnt_id_unique;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 		stat->result_mask |= STATX_MNT_ID_UNIQUE;
 	} else {
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+		if (real_mount(path->mnt)->mnt_id >= DEFAULT_KSU_MNT_ID &&
+			likely(susfs_is_current_proc_umounted_app()))
+			stat->mnt_id = susfs_get_non_sus_mnt_id_from_mnt(real_mount(path->mnt));
+		else
+			stat->mnt_id = real_mount(path->mnt)->mnt_id;
+#else
 		stat->mnt_id = real_mount(path->mnt)->mnt_id;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
 		stat->result_mask |= STATX_MNT_ID;
 	}
 
@@ -282,6 +332,12 @@ static int vfs_statx_fd(int fd, int flags, struct kstat *stat,
 	return vfs_statx_path(&fd_file(f)->f_path, flags, stat, request_mask);
 }
 
+#ifdef CONFIG_KSU_SUSFS
+extern struct static_key_true ksu_su_compat_enabled;
+extern bool __ksu_is_allow_uid_for_current(uid_t uid);
+extern int ksu_handle_stat(int *dfd, struct filename **filename, int *flags);
+#endif
+
 /**
  * vfs_statx - Get basic and extra attributes by filename
  * @dfd: A file descriptor representing the base dir for a relative filename
@@ -303,6 +359,19 @@ static int vfs_statx(int dfd, struct filename *filename, int flags,
 	struct path path;
 	unsigned int lookup_flags = getname_statx_lookup_flags(flags);
 	int error;
+
+#ifdef CONFIG_KSU_SUSFS
+	if (likely(susfs_is_current_proc_no_su()))
+		goto orig_flow;
+
+	if (static_branch_likely(&ksu_su_compat_enabled)) {
+		if (unlikely(__ksu_is_allow_uid_for_current(current_uid().val)))
+			ksu_handle_stat(&dfd, &filename, &flags);
+	}
+
+orig_flow:
+#endif
+
 
 	if (flags & ~(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH |
 		      AT_STATX_SYNC_TYPE))
