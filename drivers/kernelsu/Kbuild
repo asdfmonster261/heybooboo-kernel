@@ -125,6 +125,16 @@ $(info -- KernelSU-Next Git repo detected at: $(GIT_ROOT))
 endif
 endif
 
+# This tree is copied in rather than checked out, so the probe above finds no
+# repo and falls through to KSU_VERSION_FALLBACK of 1. The manager refuses to
+# talk to anything below 33188, so pin what the probe would have produced for
+# pershoot dev-susfs 3438d6a: 3253 commits to the merge-base with origin/dev.
+ifndef KSU_GIT_VERSION_VALID
+KSU_GIT_VERSION := 3253
+KSU_GIT_TAG := v3.3.0
+KSU_GIT_VERSION_VALID := 1
+endif
+
 # Calculate version if git version is available
 ifdef KSU_GIT_VERSION_VALID
 # ksu_version: major * 30000 + git version for historical reasons
