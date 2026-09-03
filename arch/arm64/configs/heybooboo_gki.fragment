@@ -14,3 +14,4 @@ CONFIG_BBG=y
 CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,ipe,bpf,baseband_guard"
 CONFIG_NTSYNC=y
 CONFIG_TCP_CONG_BBR3=y
+CONFIG_DEFAULT_BBR3=y
