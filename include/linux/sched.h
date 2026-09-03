@@ -866,6 +866,17 @@ struct task_struct {
 	int				normal_prio;
 	unsigned int			rt_priority;
 
+#ifdef CONFIG_SYSVIPC
+	union {
+		char __kabi_ignored_0;
+		struct sysv_sem			sysvsem;
+	}__attribute__((packed));
+	union {
+		char __kabi_ignored_1;
+		struct sysv_shm			sysvshm;
+	}__attribute__((packed));
+#endif
+
 	struct sched_entity		se;
 	struct sched_rt_entity		rt;
 	struct sched_dl_entity		dl;
@@ -1173,8 +1184,8 @@ struct task_struct {
 	struct nameidata		*nameidata;
 
 #ifdef CONFIG_SYSVIPC
-	struct sysv_sem			sysvsem;
-	struct sysv_shm			sysvshm;
+	// struct sysv_sem			sysvsem;
+	// struct sysv_shm			sysvshm;
 #endif
 #ifdef CONFIG_DETECT_HUNG_TASK
 	unsigned long			last_switch_count;
