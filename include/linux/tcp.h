@@ -385,6 +385,14 @@ struct tcp_sock {
 		syn_data_acked:1;/* data in SYN is acked by SYN-ACK */
 
 	u8	keepalive_probes; /* num of allowed keep alive probes	*/
+	union {
+		u8	__kabi_ignored_0;
+		struct {
+			u8	fast_ack_mode:2, /* which fast ack mode ? */
+				tlp_orig_data_app_limited:1, /* app-limited before TLP rtx? */
+				pad_unused:5;
+		};
+	};
 	u32	tcp_tx_delay;	/* delay (in usec) added to TX packets */
 
 /* RTT measurement */
