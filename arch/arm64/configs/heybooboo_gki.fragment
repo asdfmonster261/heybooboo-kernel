@@ -13,3 +13,4 @@ CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y
 CONFIG_BBG=y
 CONFIG_LSM="landlock,lockdown,yama,loadpin,safesetid,selinux,smack,tomoyo,apparmor,ipe,bpf,baseband_guard"
 CONFIG_NTSYNC=y
+CONFIG_TCP_CONG_BBR3=y
