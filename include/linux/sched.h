@@ -813,6 +813,38 @@ enum blocked_on_state {
 	BO_WAKING,
 };
 
+#ifdef CONFIG_SCHED_BORE
+#define BORE_BC_TIMESTAMP_SHIFT 16
+
+struct bore_bc {
+	union {
+		struct {
+			u64		timestamp:	48;
+			u64		penalty:	16;
+		};
+		u64			value;
+	};
+};
+
+struct bore_ctx {
+	u64				burst_time;
+	u16				prev_penalty;
+	u16				curr_penalty;
+	union {
+		u16			penalty;
+		struct {
+			u8		_;
+			u8		score;
+		};
+	};
+	bool			stop_update;
+	bool			futex_waiting;
+	struct bore_bc	subtree;
+	struct bore_bc	group;
+};
+#endif /* CONFIG_SCHED_BORE */
+
+
 struct task_struct {
 #ifdef CONFIG_THREAD_INFO_IN_TASK
 	/*
@@ -1657,10 +1689,24 @@ struct task_struct {
 		unsigned	user_dumpable:1;
 		});
 
+#ifdef CONFIG_SCHED_BORE
+	/*
+	 * BORE per-task state (struct bore_ctx, 32 bytes) placed in four reserved
+	 * KABI slots individually. A single multi-slot union folds to one
+	 * placeholder in gendwarfksyms and shifts task_struct's version hash;
+	 * four discrete USE slots match the stock four u64 reserves. Reach it
+	 * via task_bore(), not these members.
+	 */
+	ANDROID_KABI_USE(4, u64 __bore_q0);
+	ANDROID_KABI_USE(5, u64 __bore_q1);
+	ANDROID_KABI_USE(6, u64 __bore_q2);
+	ANDROID_KABI_USE(7, u64 __bore_q3);
+#else
 	ANDROID_KABI_RESERVE(4);
 	ANDROID_KABI_RESERVE(5);
 	ANDROID_KABI_RESERVE(6);
 	ANDROID_KABI_RESERVE(7);
+#endif
 	ANDROID_KABI_RESERVE(8);
 
 #ifdef CONFIG_RV
