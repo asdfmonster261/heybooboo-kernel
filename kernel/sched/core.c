@@ -1555,13 +1555,17 @@ unsigned int sysctl_sched_uclamp_util_min_rt_default = SCHED_CAPACITY_SCALE;
 static struct uclamp_se uclamp_default[UCLAMP_CNT];
 
 /*
- * Latency-boost: a minimum utilization floor (0..1024) applied to tasks in the
- * top-app cpuset so foreground work reaches a high OPP immediately instead of
- * waiting for the util signal to ramp. 0 disables it. Runtime tunable via
- * kernel.sched_util_topapp_min.
+ * Latency-boost: a utilization floor for tasks in the top-app cpuset, so the
+ * governor lifts foreground work to a high OPP without waiting for the util
+ * signal to ramp. The floor is shaped by how bursty the task is (BORE score):
+ * a transient burst (launch, scroll, tap) reaches topapp_max, a sustained load
+ * (a game render thread) settles to the lower topapp_cap, holding frequency up
+ * without pinning max and thermal-throttling. Set topapp_max 0 to disable.
+ * Both runtime tunable via kernel.sched_util_topapp_{max,cap}.
  */
-static unsigned int sysctl_sched_util_topapp_min = 512;
-static int sysctl_sched_util_topapp_min_max = SCHED_CAPACITY_SCALE;
+static unsigned int sysctl_sched_util_topapp_max = SCHED_CAPACITY_SCALE;
+static unsigned int sysctl_sched_util_topapp_cap = 768;
+static int sysctl_sched_util_boost_max = SCHED_CAPACITY_SCALE;
 
 /*
  * This static key is used to reduce the uclamp overhead in the fast path. It
@@ -1712,25 +1716,52 @@ static bool task_in_top_app(struct task_struct *p) { return false; }
 #endif
 
 /*
- * Raise the UCLAMP_MIN floor for latency-critical tasks so the governor picks a
- * high OPP for foreground work immediately. Bounded by the system default
- * ceiling and applied only when the task would otherwise sit below the floor.
+ * Transientness of a task: 0 (sustained/CPU-bound) .. SCHED_CAPACITY_SCALE
+ * (just-woken/interactive), from BORE's burst score (0..39). It shapes how hard
+ * foreground work is floored. Without BORE, treat everything as transient.
+ */
+static inline unsigned int task_transientness(struct task_struct *p)
+{
+#ifdef CONFIG_SCHED_BORE
+	unsigned int score = task_bore(p)->score;
+
+	if (score >= 39)
+		return 0;
+	return SCHED_CAPACITY_SCALE - (score * SCHED_CAPACITY_SCALE / 39);
+#else
+	return SCHED_CAPACITY_SCALE;
+#endif
+}
+
+/*
+ * Raise the UCLAMP_MIN floor for top-app work so the governor picks a high OPP
+ * at once. The floor scales with transientness: a transient burst reaches
+ * topapp_max (race-to-idle for launch/scroll), a sustained load settles to
+ * topapp_cap so it holds frequency up without pinning max and thermal-
+ * throttling a game. Bounded by the system default; applied only when it raises
+ * the floor. task_in_top_app() is checked after the cheap early-outs.
  */
 static inline void uclamp_latency_boost(struct task_struct *p,
 					enum uclamp_id clamp_id,
 					struct uclamp_se *uc_eff,
 					struct uclamp_se *uc_max)
 {
-	unsigned int floor;
+	unsigned int mx, cap, floor;
 
 	if (clamp_id != UCLAMP_MIN)
 		return;
-	floor = READ_ONCE(sysctl_sched_util_topapp_min);
-	if (!floor || uc_eff->value >= floor)
+	mx = READ_ONCE(sysctl_sched_util_topapp_max);
+	if (!mx || uc_eff->value >= mx)
 		return;
+	if (!task_in_top_app(p))
+		return;
+	cap = READ_ONCE(sysctl_sched_util_topapp_cap);
+	if (cap > mx)
+		cap = mx;
+	floor = cap + ((mx - cap) * task_transientness(p) / SCHED_CAPACITY_SCALE);
 	if (floor > uc_max->value)
 		floor = uc_max->value;
-	if (uc_eff->value >= floor || !task_in_top_app(p))
+	if (uc_eff->value >= floor)
 		return;
 	uclamp_se_set(uc_eff, floor, false);
 }
@@ -5390,13 +5421,22 @@ static struct ctl_table sched_core_sysctls[] = {
 		.proc_handler   = sysctl_sched_uclamp_handler,
 	},
 	{
-		.procname       = "sched_util_topapp_min",
-		.data           = &sysctl_sched_util_topapp_min,
+		.procname       = "sched_util_topapp_max",
+		.data           = &sysctl_sched_util_topapp_max,
 		.maxlen         = sizeof(unsigned int),
 		.mode           = 0644,
 		.proc_handler   = proc_dointvec_minmax,
 		.extra1         = SYSCTL_ZERO,
-		.extra2         = &sysctl_sched_util_topapp_min_max,
+		.extra2         = &sysctl_sched_util_boost_max,
+	},
+	{
+		.procname       = "sched_util_topapp_cap",
+		.data           = &sysctl_sched_util_topapp_cap,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = &sysctl_sched_util_boost_max,
 	},
 #endif /* CONFIG_UCLAMP_TASK */
 #ifdef CONFIG_NUMA_BALANCING
