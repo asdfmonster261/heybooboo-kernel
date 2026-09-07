@@ -1693,20 +1693,38 @@ uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 #ifdef CONFIG_CPUSETS
 /*
  * True if @p is in the Android "top-app" cpuset, i.e. it belongs to the app the
- * user is interacting with. Read under RCU; the name compare is gated by the
- * cheap checks in uclamp_latency_boost() so it stays off the hot path for tasks
- * that would not be boosted anyway.
+ * user is interacting with.
+ *
+ * This runs from uclamp_eff_get(), which is called under rq->lock with
+ * interrupts disabled, so it must not take any lock. cgroup_name() would grab
+ * the global kernfs_rename_lock; taking that under rq->lock races with cgroup
+ * and kernfs activity during suspend/resume and hard-locks the CPU. Instead
+ * resolve the group by name once, locklessly, then cache its cgroup pointer and
+ * compare by address forever after. The name read can only race with a rename
+ * of the top-app cpuset, which does not happen; a miss just skips the floor for
+ * one tick. The cached pointer is only ever compared, never dereferenced.
  */
+static struct cgroup *top_app_cgrp __read_mostly;
+
 static bool task_in_top_app(struct task_struct *p)
 {
-	struct cgroup *cgrp;
-	char buf[16];
-	bool ret;
+	struct cgroup *cgrp, *top;
+	bool ret = false;
 
 	rcu_read_lock();
 	cgrp = task_css(p, cpuset_cgrp_id)->cgroup;
-	ret = cgrp && cgroup_name(cgrp, buf, sizeof(buf)) > 0 &&
-	      !strcmp(buf, "top-app");
+	top = READ_ONCE(top_app_cgrp);
+	if (likely(top)) {
+		ret = cgrp == top;
+	} else if (cgrp) {
+		struct kernfs_node *kn = READ_ONCE(cgrp->kn);
+		const char *name = kn ? READ_ONCE(kn->name) : NULL;
+
+		if (name && !strcmp(name, "top-app")) {
+			WRITE_ONCE(top_app_cgrp, cgrp);
+			ret = true;
+		}
+	}
 	rcu_read_unlock();
 
 	return ret;
