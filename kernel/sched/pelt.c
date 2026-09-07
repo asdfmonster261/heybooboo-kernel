@@ -538,6 +538,14 @@ int sched_pelt_multiplier(const struct ctl_table *table, int write, void *buffer
 	if (!write)
 		goto done;
 
+	/*
+	 * Android init writes '1' (32ms half-life) here at boot, which would undo
+	 * our faster default. Enforce a floor so this sysctl can only be tuned up
+	 * (to 4 = 8ms), never back down to the stock 32ms.
+	 */
+	if (sysctl_sched_pelt_multiplier < 2)
+		sysctl_sched_pelt_multiplier = 2;
+
 	trace_android_vh_sched_pelt_multiplier(old, sysctl_sched_pelt_multiplier, &ret);
 	if (ret)
 		goto undo;
