@@ -517,11 +517,11 @@ bool update_other_load_avgs(struct rq *rq)
 		update_irq_load_avg(rq, 0);
 }
 
-__read_mostly unsigned int sched_pelt_lshift;
+__read_mostly unsigned int sched_pelt_lshift = 1; /* seed: matches the 2x multiplier default */
 
 #ifdef CONFIG_SYSCTL
 #include <trace/hooks/sched.h>
-static unsigned int sysctl_sched_pelt_multiplier = 1;
+static unsigned int sysctl_sched_pelt_multiplier = 2; /* 16ms PELT half-life; tunable at runtime */
 
 int sched_pelt_multiplier(const struct ctl_table *table, int write, void *buffer,
 			  size_t *lenp, loff_t *ppos)
