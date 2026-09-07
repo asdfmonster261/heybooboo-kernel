@@ -1547,6 +1547,15 @@ unsigned int sysctl_sched_uclamp_util_min_rt_default = SCHED_CAPACITY_SCALE;
 static struct uclamp_se uclamp_default[UCLAMP_CNT];
 
 /*
+ * Latency-boost: a minimum utilization floor (0..1024) applied to tasks in the
+ * top-app cpuset so foreground work reaches a high OPP immediately instead of
+ * waiting for the util signal to ramp. 0 disables it. Runtime tunable via
+ * kernel.sched_util_topapp_min.
+ */
+static unsigned int sysctl_sched_util_topapp_min = 512;
+static int sysctl_sched_util_topapp_min_max = SCHED_CAPACITY_SCALE;
+
+/*
  * This static key is used to reduce the uclamp overhead in the fast path. It
  * primarily disables the call to uclamp_rq_{inc, dec}() in
  * enqueue/dequeue_task().
@@ -1669,6 +1678,55 @@ uclamp_tg_restrict(struct task_struct *p, enum uclamp_id clamp_id)
 	return uc_req;
 }
 
+#ifdef CONFIG_CPUSETS
+/*
+ * True if @p is in the Android "top-app" cpuset, i.e. it belongs to the app the
+ * user is interacting with. Read under RCU; the name compare is gated by the
+ * cheap checks in uclamp_latency_boost() so it stays off the hot path for tasks
+ * that would not be boosted anyway.
+ */
+static bool task_in_top_app(struct task_struct *p)
+{
+	struct cgroup *cgrp;
+	char buf[16];
+	bool ret;
+
+	rcu_read_lock();
+	cgrp = task_css(p, cpuset_cgrp_id)->cgroup;
+	ret = cgrp && cgroup_name(cgrp, buf, sizeof(buf)) > 0 &&
+	      !strcmp(buf, "top-app");
+	rcu_read_unlock();
+
+	return ret;
+}
+#else
+static bool task_in_top_app(struct task_struct *p) { return false; }
+#endif
+
+/*
+ * Raise the UCLAMP_MIN floor for latency-critical tasks so the governor picks a
+ * high OPP for foreground work immediately. Bounded by the system default
+ * ceiling and applied only when the task would otherwise sit below the floor.
+ */
+static inline void uclamp_latency_boost(struct task_struct *p,
+					enum uclamp_id clamp_id,
+					struct uclamp_se *uc_eff,
+					struct uclamp_se *uc_max)
+{
+	unsigned int floor;
+
+	if (clamp_id != UCLAMP_MIN)
+		return;
+	floor = READ_ONCE(sysctl_sched_util_topapp_min);
+	if (!floor || uc_eff->value >= floor)
+		return;
+	if (floor > uc_max->value)
+		floor = uc_max->value;
+	if (uc_eff->value >= floor || !task_in_top_app(p))
+		return;
+	uclamp_se_set(uc_eff, floor, false);
+}
+
 /*
  * The effective clamp bucket index of a task depends on, by increasing
  * priority:
@@ -1686,14 +1744,17 @@ uclamp_eff_get(struct task_struct *p, enum uclamp_id clamp_id)
 	int ret = 0;
 
 	trace_android_rvh_uclamp_eff_get(p, clamp_id, &uc_max, &uc_eff, &ret);
-	if (ret)
-		return uc_eff;
+	if (!ret) {
+		/* System default restrictions always apply */
+		if (unlikely(uc_req.value > uc_max.value))
+			uc_eff = uc_max;
+		else
+			uc_eff = uc_req;
+	}
 
-	/* System default restrictions always apply */
-	if (unlikely(uc_req.value > uc_max.value))
-		return uc_max;
+	uclamp_latency_boost(p, clamp_id, &uc_eff, &uc_max);
 
-	return uc_req;
+	return uc_eff;
 }
 
 unsigned long uclamp_eff_value(struct task_struct *p, enum uclamp_id clamp_id)
@@ -5319,6 +5380,15 @@ static struct ctl_table sched_core_sysctls[] = {
 		.maxlen         = sizeof(unsigned int),
 		.mode           = 0644,
 		.proc_handler   = sysctl_sched_uclamp_handler,
+	},
+	{
+		.procname       = "sched_util_topapp_min",
+		.data           = &sysctl_sched_util_topapp_min,
+		.maxlen         = sizeof(unsigned int),
+		.mode           = 0644,
+		.proc_handler   = proc_dointvec_minmax,
+		.extra1         = SYSCTL_ZERO,
+		.extra2         = &sysctl_sched_util_topapp_min_max,
 	},
 #endif /* CONFIG_UCLAMP_TASK */
 #ifdef CONFIG_NUMA_BALANCING
