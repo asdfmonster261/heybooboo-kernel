@@ -7747,6 +7747,20 @@ static int tcpm_fw_get_caps(struct tcpm_port *port, struct fwnode_handle *fwnode
 		port->typec_caps.accessory[mode++] = TYPEC_ACCESSORY_DEBUG;
 
 	port->port_type = port->typec_caps.type;
+
+	/*
+	 * In recovery and fastbootd this connector comes up sink-only even
+	 * though the hardware is dual-role and still advertises source-pdos.
+	 * Restore DRP so USB host works there; a normal boot presents a
+	 * dual-role connector and never reaches this.
+	 */
+	if (port->typec_caps.type == TYPEC_PORT_SNK &&
+	    fwnode_property_present(fwnode, "source-pdos")) {
+		port->typec_caps.type = TYPEC_PORT_DRP;
+		port->typec_caps.data = TYPEC_PORT_DRD;
+		port->typec_caps.prefer_role = TYPEC_SINK;
+		port->port_type = TYPEC_PORT_DRP;
+	}
 	port->pd_supported = !fwnode_property_read_bool(fwnode, "pd-disable");
 	port->slow_charger_loop = fwnode_property_read_bool(fwnode, "slow-charger-loop");
 	port->self_powered = fwnode_property_read_bool(fwnode, "self-powered");
