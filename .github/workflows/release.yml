@@ -1,0 +1,172 @@
+# Build this kernel and publish a release. Manually triggered: a release is a decision,
+# and the build host does this in a couple of minutes against half an hour here. What CI
+# buys is that what people flash came from what is pushed, by something other than one
+# laptop.
+#
+# This file lives on the feature branch, never on main: main is raw unmodified ACK and
+# has to stay that way for `git fetch aosp` plus a fast-forward to keep working. It is
+# also excluded from kleaf's common_kernel_sources glob in BUILD.bazel, so editing CI
+# does not invalidate the kernel build.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: tag to publish under (leave blank to build and attach artifacts only)
+        default: ''
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      MANIFEST: https://android.googlesource.com/kernel/manifest
+      BRANCH: common-android16-6.12
+
+    steps:
+      # The dispatch ref decides what gets built, so there is no branch input to get
+      # out of step with it.
+      - name: Check out the kernel
+        uses: actions/checkout@v7
+        with:
+          path: kernelsrc
+          fetch-depth: 1
+
+      - name: Check out the packaging tooling
+        uses: actions/checkout@v7
+        with:
+          repository: asdfmonster261/heybooboo-build
+          path: buildtools
+
+      # Headroom rather than necessity: measured peak was 59 GB of the runner's 145 GB.
+      # Kept because bazel output grows and an LTO build would need far more. Inline
+      # rather than a cleanup action because this job publishes images people flash, so
+      # each third-party action is trust extended for very little.
+      - name: Make room
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/.ghcup /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost /usr/share/swift
+          sudo docker image prune -af || true
+          df -h / | tail -1
+
+      - name: Install repo
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+          sudo apt-get -qq update && sudo apt-get -qq install -y xz-utils bzip2
+
+      # Sync ACK for the toolchain and kleaf, but drop its own common: our source is
+      # already on disk from the checkout above, so pulling it again through repo would
+      # download the same 1.7 GB twice. Moving it to gki/common puts it exactly where
+      # the build host's bind mount puts it.
+      - name: Sync the ACK toolchain and drop its kernel tree
+        run: |
+          mkdir -p gki && cd gki
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+          repo init -u "$MANIFEST" -b "$BRANCH" --depth=1 --no-clone-bundle
+          mkdir -p .repo/local_manifests
+          cat > .repo/local_manifests/heybooboo.xml <<'XML'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <manifest>
+            <remove-project name="kernel/common" />
+          </manifest>
+          XML
+          repo sync -c -j"$(nproc)" --no-clone-bundle --optimized-fetch --prune --fail-fast
+          cd "$GITHUB_WORKSPACE"
+          test ! -e gki/common
+          mv kernelsrc gki/common
+          test -f gki/common/Makefile
+          df -h / | tail -1
+
+      # Without this the artifacts stamp -maybe-dirty and a 1970 build date: kleaf's
+      # non-stamp branch hardcodes both, and its own git fallback is dead on a shallow
+      # checkout. --short=12 is explicit rather than relying on git's object-count
+      # heuristic, which differs between a shallow clone and a full one.
+      - name: Stamp scmversion and build date
+        working-directory: gki
+        run: |
+          SHORT=$(git -C common rev-parse --short=12 HEAD)
+          SDE=$(git -C common log -1 --pretty=%ct HEAD)
+          echo "KVER_SCM=$SHORT" >> "$GITHUB_ENV"
+          sed -i -E "/stable_scmversion_cmd = \"echo/ s/'.*'/'-heybooboo-g$SHORT'/" \
+            build/kernel/kleaf/impl/stamp.bzl
+          sed -i -E "s/export SOURCE_DATE_EPOCH=[0-9]+/export SOURCE_DATE_EPOCH=$SDE/" \
+            build/kernel/kleaf/impl/stamp.bzl
+          sed -i 's/date -d @/date -u -d @/' build/kernel/_setup_env.sh
+          grep -q "echo '-heybooboo-g$SHORT'" build/kernel/kleaf/impl/stamp.bzl
+          grep -q "export SOURCE_DATE_EPOCH=$SDE" build/kernel/kleaf/impl/stamp.bzl
+
+      # Deliberately uncached. kleaf runs the whole compile inside ONE bazel action, so a
+      # --disk_cache entry keys on that action's inputs and a release is by definition a
+      # new commit: it would miss every time. Measured 1290 s with a 1256 s critical
+      # path, so it is one serial chain, and more cores would not move it either.
+      - name: Build the GKI kernel
+        working-directory: gki
+        run: tools/bazel build //common:kernel_aarch64_gki_artifacts
+
+      # stgdiff exits 4 on drift, which is the normal state here and not a failure, so
+      # the verdict comes from comparing the report against the approved breaks.
+      - name: Check the ABI against the approved breaks
+        working-directory: gki
+        run: |
+          tools/bazel run //common:kernel_aarch64_abi_diff || true
+          d=bazel-bin/common/kernel_aarch64_abi_diff
+          echo "stgdiff exit: $(cat "$d/exit_code_file.txt" 2>/dev/null)"
+          "$GITHUB_WORKSPACE/buildtools/scripts/check-abi.sh" check "$d/abi_stgdiff/abi.report.small"
+
+      # release.sh fetches a current stock boot from Google's OTA, gates the repack
+      # against it, and emits the zip plus an image named for that patch level. It
+      # refuses to publish an unsigned image, so the raw kleaf boot.img and its
+      # placeholder 2027-00-05 patch level cannot reach a release.
+      - name: Package
+        run: |
+          mkdir -p out
+          REL=$(strings gki/bazel-bin/common/kernel_aarch64/vmlinux \
+                | grep -m1 -oE '6\.[0-9]+\.[0-9]+-android[0-9]+-[0-9]+')
+          [ -n "$REL" ] || { echo "no kernel release string in vmlinux" >&2; exit 1; }
+          NAME="heybooboo-${REL%%-android*}-g${KVER_SCM}"
+          echo "REL_NAME=$NAME" >> "$GITHUB_ENV"
+          buildtools/scripts/release.sh \
+            gki/bazel-bin/common/kernel_aarch64_gki_artifacts/boot.img "out/${NAME}.zip"
+          img=$(ls out/*-spl*.img)
+          echo "REL_SPL=$(basename "$img" | sed -E 's/.*-spl([0-9-]+)\.img/\1/')" >> "$GITHUB_ENV"
+          ls -l out/
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.REL_NAME }}
+          path: out/*
+          if-no-files-found: error
+
+      - name: Publish
+        if: inputs.release_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<MD
+          Kernel \`${REL_NAME}\` for the Pixel 11 Pro Fold (yogi).
+
+          Built from \`${{ github.ref_name }}\` at \`${KVER_SCM}\`, gated against stock
+          security patch level **${REL_SPL}**.
+
+          | file | use |
+          |---|---|
+          | \`${REL_NAME}.zip\` | Flash in OrangeFox or KernelFlasher. Repacks the kernel into your own boot image, so it works on **any** security patch level. |
+          | \`${REL_NAME}-spl${REL_SPL}.img\` | \`fastboot flash boot\`, for a first install with no root or custom recovery yet. Pinned to patch level **${REL_SPL}**: do not flash it on a newer one. |
+
+          vendor_kernel_boot is left stock and must not be flashed.
+          MD
+          gh release create "${{ inputs.release_tag }}" out/* \
+            --title "$REL_NAME" --notes-file notes.md
