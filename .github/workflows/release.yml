@@ -108,10 +108,13 @@ jobs:
           grep -q "echo '-heybooboo-g$SHORT'" build/kernel/kleaf/impl/stamp.bzl
           grep -q "export SOURCE_DATE_EPOCH=$SDE" build/kernel/kleaf/impl/stamp.bzl
 
-      # Deliberately uncached. kleaf runs the whole compile inside ONE bazel action, so a
-      # --disk_cache entry keys on that action's inputs and a release is by definition a
-      # new commit: it would miss every time. Measured 1290 s with a 1256 s critical
-      # path, so it is one serial chain, and more cores would not move it either.
+      # Deliberately uncached: kleaf runs the whole compile inside ONE bazel action, so a
+      # --disk_cache entry keys on that action's inputs, and a release is by definition a
+      # new commit, so it would miss every time. Measured 1290 s with a 1256 s critical
+      # path. That is one action, NOT a serial workload: it runs make -j inside, so cores
+      # do help (the 32-thread build host does the same compile in 134 s). A larger runner
+      # would cut this several-fold, it just costs money that ~30 min of unwatched
+      # wall-clock does not obviously justify.
       - name: Build the GKI kernel
         working-directory: gki
         run: tools/bazel build //common:kernel_aarch64_gki_artifacts
