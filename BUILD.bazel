@@ -159,6 +159,7 @@ filegroup(
             "BUILD.bazel",
             "**/*.bzl",
             ".git/**",
+            ".github/**",
 
             # ctag files
             "tags",
