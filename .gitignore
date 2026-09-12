@@ -108,6 +108,7 @@ modules.order
 !.cocciconfig
 !.editorconfig
 !.get_maintainer.ignore
+!.github
 !.gitattributes
 !.gitignore
 !.kunitconfig
