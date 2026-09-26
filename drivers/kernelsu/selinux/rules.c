@@ -52,6 +52,12 @@ void apply_kernelsu_rules()
     }
 
     mutex_lock(&selinux_state.policy_mutex);
+    if (!old_pol) {
+        pr_warn("SELinux policy is NULL. Skipping SELinux rules application.\n");
+        mutex_unlock(&selinux_state.policy_mutex);
+        return;
+    }
+
     backup_sepolicy =
         ksu_dup_sepolicy(rcu_dereference_protected(old_pol, lockdep_is_held(&selinux_state.policy_mutex)));
     if (IS_ERR(backup_sepolicy)) {
@@ -97,12 +103,6 @@ void apply_kernelsu_rules()
 
     // allow all!
     ksu_allow(db, KERNEL_SU_DOMAIN, ALL, ALL, ALL);
-
-    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "read");
-    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "write");
-    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "connectto");
-    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getopt");
-    ksu_allow(db, "domain", KERNEL_SU_DOMAIN, "unix_stream_socket", "getattr");
 
     // allow us do any ioctl
     if (db->policyvers >= POLICYDB_VERSION_XPERMS_IOCTL) {
@@ -162,27 +162,11 @@ void apply_kernelsu_rules()
     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "getpgid");
     ksu_allow(db, "system_server", KERNEL_SU_DOMAIN, "process", "sigkill");
 
-    // throne_tracker kthread; /data | /data/app traversal; apk / packages.list access
-    ksu_allow(db, "kernel", "kernel", "capability", "dac_read_search");
-    ksu_allow(db, "kernel", "system_data_file", "dir", "search");
-    ksu_allow(db, "kernel", "packages_list_file", "file", "read");
-    ksu_allow(db, "kernel", "packages_list_file", "file", "open");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "read");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "open");
-    ksu_allow(db, "kernel", "apk_data_file", "dir", "search");
-    ksu_allow(db, "kernel", "apk_data_file", "file", "read");
-    ksu_allow(db, "kernel", "apk_data_file", "file", "open");
-
     rcu_assign_pointer(selinux_state.policy, pol);
     synchronize_rcu();
     ksu_destroy_sepolicy(old_pol);
 
     reset_avc_cache();
-
-#ifdef CONFIG_KSU_SUSFS
-    susfs_set_batch_sid();
-#endif
-
 out_unlock:
     mutex_unlock(&selinux_state.policy_mutex);
 }
@@ -494,6 +478,12 @@ int handle_sepolicy(void __user *user_data, u64 data_len)
     mutex_lock(&selinux_state.policy_mutex);
 
     old_pol = selinux_state.policy;
+    if (!old_pol) {
+        pr_warn("SELinux policy is NULL. Skipping ksu_handle_sepolicy.\n");
+        ret = -EINVAL;
+        goto out_unlock;
+    }
+
     pol = ksu_dup_sepolicy(rcu_dereference_protected(
         old_pol, lockdep_is_held(&selinux_state.policy_mutex)));
     if (IS_ERR(pol)) {
