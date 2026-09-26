@@ -9,7 +9,7 @@
 // Escalate current process to root with the appropriate profile
 int escape_with_root_profile(void);
 
-int escape_to_root_for_init(void);
+void escape_to_root_for_init(void);
 
 void __init ksu_app_profile_init(void);
 
