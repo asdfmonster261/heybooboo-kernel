@@ -1,4 +1,6 @@
-
+#include "ksu.h"
+#include "linux/cred.h"
+#include "util.h"
 #include <linux/err.h>
 #include <linux/fs.h>
 #include <linux/list.h>
@@ -6,15 +8,6 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/version.h>
-#ifdef CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED
-#include <linux/kthread.h>
-#include <linux/sched.h>
-#endif
-#include <linux/compiler.h>  // WRITE_ONCE
-#include <linux/delay.h>     // msleep
-#include <linux/preempt.h>   // in_atomic()
-#include <linux/irqflags.h>  // irqs_disabled()
-#include <linux/atomic.h>    // cmpxchg
 
 #include "policy/allowlist.h"
 #include "manager/apk_sign.h"
@@ -205,7 +198,7 @@ void search_manager(const char *path, int depth, struct list_head *uid_data)
 			struct file *file;
 
 			if (!stop) {
-				file = filp_open(pos->dirpath, O_RDONLY | O_NOFOLLOW | O_DIRECTORY, 0);
+				file = ksu_filp_open_nonotify(pos->dirpath, O_RDONLY | O_NOFOLLOW | O_NOATIME);
 				if (IS_ERR(file)) {
 					pr_err("Failed to open directory: %s, err: %ld\n",
 						pos->dirpath, PTR_ERR(file));
@@ -267,26 +260,14 @@ static bool is_uid_exist(uid_t uid, char *package, void *data)
 	return exist;
 }
 
-static void track_throne_function(bool prune_only)
+void track_throne(bool prune_only)
 {
-	struct file *fp = NULL;
-	int t;
-	long err = -ENOENT;
-
-	// Retry (open; avoids races with pkg. mgr. packages.list update(s); hint: is_lock_held)
-	for (t = 0;
-		t < 10 && IS_ERR(fp = filp_open(SYSTEM_PACKAGES_LIST_PATH, O_RDONLY, 0));
-		t++) {
-			err = PTR_ERR(fp);
-			if (!is_lock_held(SYSTEM_PACKAGES_LIST_PATH) &&
-				err != -EBUSY && err != -EAGAIN && err != -ENOENT)
-					break;
-			msleep(100);
-	}
+	const struct cred *old_cred = override_creds(ksu_cred);
+	struct file *fp = filp_open(SYSTEM_PACKAGES_LIST_PATH, O_RDONLY, 0);
 	if (IS_ERR(fp)) {
-		pr_err("%s: open " SYSTEM_PACKAGES_LIST_PATH " failed: %ld\n",
-			__func__, err);
-		return;
+		pr_err("%s: open " SYSTEM_PACKAGES_LIST_PATH " failed: %ld\n", __func__,
+			PTR_ERR(fp));
+		goto out_revert_cred;
 	}
 
 	struct list_head uid_list;
@@ -309,7 +290,7 @@ static void track_throne_function(bool prune_only)
 		}
 		buf[count] = '\0';
 
-		struct uid_data *data = kzalloc(sizeof(*data), GFP_KERNEL);
+		struct uid_data *data = kzalloc(sizeof(struct uid_data), GFP_KERNEL);
 		if (!data) {
 			filp_close(fp, 0);
 			goto out;
@@ -375,62 +356,18 @@ out:
 		list_del(&np->list);
 		kfree(np);
 	}
+out_revert_cred:
+	revert_creds(old_cred);
 }
-
-#ifdef CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED
-static struct task_struct *throne_thread;
-static int throne_tracker_thread(void *data);
-
-// Wrapper
-void track_throne(bool prune_only)
-{
-	struct task_struct *t;
-
-	/*
-	 * Single-flight; do nothing if thread running
-	 *                race closure via sentinel set: ERR_PTR(-EINPROGRESS)
-	 *
-	 */
-	if (cmpxchg(&throne_thread, NULL,
-			(struct task_struct *)ERR_PTR(-EINPROGRESS)) != NULL)
-		return;
-
-	t = kthread_run(throne_tracker_thread,
-			(void *)(unsigned long)prune_only,
-			"throne_tracker");
-
-	if (IS_ERR(t))
-		WRITE_ONCE(throne_thread, NULL);
-	else
-		WRITE_ONCE(throne_thread, t);
-}
-
-// Threaded
-static int throne_tracker_thread(void *data)
-{
-	bool prune_only = (bool)(unsigned long)data;
-
-	pr_info("%s: pid: %d started (prune_only=%d)\n",
-		__func__, current->pid, prune_only);
-
-	track_throne_function(prune_only);
-
-	// clear slot
-	WRITE_ONCE(throne_thread, NULL);
-
-	pr_info("%s: pid: %d exit\n", __func__, current->pid);
-	return 0;
-}
-#else
-void track_throne(bool prune_only)
-{
-	track_throne_function(prune_only);
-}
-#endif // CONFIG_KSU_THRONE_TRACKER_ALWAYS_THREADED
 
 void __init ksu_throne_tracker_init()
 {
-	// nothing to do
+	struct apk_path_hash *pos, *n;
+
+	list_for_each_entry_safe (pos, n, &apk_path_hash_list, list) {
+		list_del(&pos->list);
+		kfree(pos);
+	}
 }
 
 void __exit ksu_throne_tracker_exit()
