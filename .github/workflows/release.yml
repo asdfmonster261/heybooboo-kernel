@@ -155,8 +155,12 @@ jobs:
 
       - name: Publish
         if: inputs.release_tag != ''
+        # gh infers the repo from the CWD's git remote, but the Sync step moved the
+        # checkout into gki/common, so $GITHUB_WORKSPACE has no .git. Name the repo
+        # and the target commit explicitly instead of relying on that inference.
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           cat > notes.md <<MD
           Kernel \`${REL_NAME}\` for the Pixel 11 Pro Fold (yogi).
@@ -172,4 +176,4 @@ jobs:
           vendor_kernel_boot is left stock and must not be flashed.
           MD
           gh release create "${{ inputs.release_tag }}" out/* \
-            --title "$REL_NAME" --notes-file notes.md
+            --target "${{ github.sha }}" --title "$REL_NAME" --notes-file notes.md
