@@ -1,5 +1,6 @@
 kernelsu-objs := core/init.o
 kernelsu-objs += feature/kernel_umount.o
+kernelsu-objs += feature/module_blacklist.o
 kernelsu-objs += feature/sulog.o
 kernelsu-objs += feature/sucompat.o
 
@@ -68,6 +69,7 @@ kernelsu-objs += supercall/supercall.o
 kernelsu-objs += feature/adb_root.o
 
 kernelsu-objs += feature/selinux_hide.o
+kernelsu-objs += feature/shell_su_adb_only.o
 
 ifdef KBUILD_EXTMOD
 ifeq ($(CONFIG_KSU_DISABLE_MANAGER),y)
@@ -123,8 +125,8 @@ endif
 endif
 
 ifndef KSU_GIT_VERSION_VALID
-KSU_GIT_VERSION := 3333
-KSU_GIT_TAG := v3.4.1
+KSU_GIT_VERSION := 3355
+KSU_GIT_TAG := v3.4.2
 KSU_GIT_VERSION_VALID := 1
 endif
 
