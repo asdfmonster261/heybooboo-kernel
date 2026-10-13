@@ -6,6 +6,7 @@
 
 #include "feature/selinux_hide.h"
 #include "policy/allowlist.h"
+#include "policy/feature.h"
 #include "klog.h" // IWYU pragma: keep
 #include "runtime/ksud_boot.h"
 #include "runtime/ksud.h"
@@ -45,6 +46,8 @@ void on_post_fs_data(void)
     ksu_stop_input_hook_runtime();
 #endif
     ksu_selinux_hide_handle_post_fs_data();
+    // retry forced features which failed at second stage
+    ksu_feature_apply_forced();
 }
 
 #ifdef CONFIG_EXT4_FS
